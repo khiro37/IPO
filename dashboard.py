@@ -58,7 +58,7 @@ WATCH_STATS_COLUMNS = [
     "수익률",
     "수익금",
 ]
-PROTECTED_COLUMNS = ["평균 매도가", "수익금"]
+PROTECTED_COLUMNS = ["수익금"]
 WATCH_HIGHER_BETTER_COLUMNS = ["수요예측\n경쟁률", "일반청약\n경쟁률", "의무확약비율(전)", "의무확약비율(후)"]
 WATCH_LOWER_BETTER_COLUMNS = ["유통주식수 비율", "유통주식 비율(후)"]
 WATCH_COMPETITION_COLUMNS = ["수요예측\n경쟁률", "일반청약\n경쟁률"]
