@@ -747,6 +747,7 @@ with tab_overview:
     )
     yearly["평균수익률_pct"] = yearly["평균수익률"] * 100
     yearly["승률_pct"] = yearly["승률"] * 100
+    yearly["누적수익금"] = yearly["수익금"].cumsum()
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("연도별 평균 수익률")
@@ -775,8 +776,33 @@ with tab_overview:
     with c2:
         st.subheader("연도별 수익금")
         if is_admin:
+            profit_bar = (
+                alt.Chart(yearly)
+                .mark_bar(color="#27AE60", opacity=0.78)
+                .encode(
+                    x=alt.X("연도:O", title=""),
+                    y=alt.Y("수익금:Q", title="수익금(원)", axis=alt.Axis(format=",.0f")),
+                    tooltip=[
+                        alt.Tooltip("연도:O"),
+                        alt.Tooltip("수익금:Q", title="연도별 수익금", format=",.0f"),
+                        alt.Tooltip("누적수익금:Q", title="누적 수익금", format=",.0f"),
+                    ],
+                )
+            )
+            cumulative_line = (
+                alt.Chart(yearly)
+                .mark_line(point=True, color="#F2994A", strokeWidth=3)
+                .encode(
+                    x=alt.X("연도:O", title=""),
+                    y=alt.Y("누적수익금:Q", title="수익금(원)", axis=alt.Axis(format=",.0f")),
+                    tooltip=[
+                        alt.Tooltip("연도:O"),
+                        alt.Tooltip("누적수익금:Q", title="누적 수익금", format=",.0f"),
+                    ],
+                )
+            )
             st.altair_chart(
-                bar_chart(yearly, "연도:O", "수익금:Q", "수익금(원)", color="#27AE60"),
+                (profit_bar + cumulative_line).resolve_scale(y="shared").properties(height=330),
                 width="stretch",
             )
         else:
@@ -810,6 +836,7 @@ with tab_overview:
                     "승률_pct:Q",
                     title="승률(%)",
                     axis=alt.Axis(labelExpr="format(datum.value, '.0f') + '%'"),
+                    scale=alt.Scale(zero=False),
                 ),
                 tooltip=[
                     alt.Tooltip("연도:O"),
