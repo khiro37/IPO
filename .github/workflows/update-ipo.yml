@@ -1,0 +1,63 @@
+name: Update IPO Data
+
+on:
+  workflow_dispatch:
+  schedule:
+    # KST 월~토 08:00 = UTC 일~금 23:00
+    - cron: "0 23 * * 0-5"
+
+permissions:
+  contents: write
+
+jobs:
+  update-ipo:
+    runs-on: ubuntu-latest
+    env:
+      DART_API_KEY: ${{ secrets.DART_API_KEY }}
+      PYTHONUTF8: "1"
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate DART API key
+        run: |
+          if [ -z "$DART_API_KEY" ]; then
+            echo "::error title=Missing DART_API_KEY::Repository secret DART_API_KEY is not set."
+            exit 1
+          fi
+
+      - name: Update IPO watch data with retry
+        run: |
+          for attempt in 1 2 3; do
+            echo "IPO update attempt ${attempt}/3"
+            if python ipo_watch.py; then
+              exit 0
+            fi
+            if [ "$attempt" = "3" ]; then
+              echo "::error title=IPO update failed::All retry attempts failed."
+              exit 1
+            fi
+            sleep $((attempt * 60))
+          done
+
+      - name: Commit updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ipo_watch_results.csv ipo_watch_results.xlsx ipo_watch_raw.csv corp_codes.csv
+          if git diff --cached --quiet; then
+            echo "No IPO data changes to commit."
+            exit 0
+          fi
+          git commit -m "Update IPO data"
+          git push

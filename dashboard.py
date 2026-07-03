@@ -61,6 +61,15 @@ WATCH_STATS_COLUMNS = [
 PROTECTED_COLUMNS = ["평균 매도가", "수익금"]
 WATCH_HIGHER_BETTER_COLUMNS = ["수요예측\n경쟁률", "일반청약\n경쟁률", "의무확약비율(전)", "의무확약비율(후)"]
 WATCH_LOWER_BETTER_COLUMNS = ["유통주식수 비율", "유통주식 비율(후)"]
+WATCH_PERCENT_DISPLAY_COLUMNS = [
+    "의무확약비율(전)",
+    "의무확약비율(후)",
+    "유통주식수 비율",
+    "유통주식 비율(후)",
+    "시초가 수익률",
+    "종가 수익률",
+    "수익률",
+]
 
 
 st.markdown(
@@ -321,6 +330,21 @@ def style_watch_table(display_table, full_table):
         if col in [*WATCH_HIGHER_BETTER_COLUMNS, *WATCH_LOWER_BETTER_COLUMNS, "시가총액"]:
             styles[col] = display_table[col].map(lambda value, col=col: style_cell(value, col))
     return display_table.style.apply(lambda _: styles, axis=None)
+
+
+def prepare_watch_display_table(table):
+    display_table = table.copy()
+    for col in WATCH_PERCENT_DISPLAY_COLUMNS:
+        if col in display_table.columns:
+            display_table[col] = display_table[col].map(parse_number)
+    return display_table
+
+
+def watch_column_config():
+    config = {"_row_id": None}
+    for col in WATCH_PERCENT_DISPLAY_COLUMNS:
+        config[col] = st.column_config.NumberColumn(col, format="%.2f%%")
+    return config
 
 
 PERCENT_TABLE_COLUMNS = [
@@ -794,7 +818,11 @@ with tab_overview:
                 .mark_line(point=True, color="#F2994A", strokeWidth=3)
                 .encode(
                     x=alt.X("연도:O", title=""),
-                    y=alt.Y("누적수익금:Q", title="수익금(원)", axis=alt.Axis(format=",.0f")),
+                    y=alt.Y(
+                        "누적수익금:Q",
+                        title="누적 수익금(원)",
+                        axis=alt.Axis(format=",.0f", orient="right"),
+                    ),
                     tooltip=[
                         alt.Tooltip("연도:O"),
                         alt.Tooltip("누적수익금:Q", title="누적 수익금", format=",.0f"),
@@ -802,7 +830,7 @@ with tab_overview:
                 )
             )
             st.altair_chart(
-                (profit_bar + cumulative_line).resolve_scale(y="shared").properties(height=330),
+                (profit_bar + cumulative_line).resolve_scale(y="independent").properties(height=330),
                 width="stretch",
             )
         else:
@@ -1009,7 +1037,7 @@ with tab_watch:
     if selected_watch_year != "전체":
         watch_table = watch_table[pd.to_numeric(watch_table["_연도"], errors="coerce").eq(selected_watch_year)]
     watch_table = sort_watch_table(watch_table)
-    watch_table = watch_table[["_row_id", *WATCH_COLUMNS]].astype(str)
+    watch_table = prepare_watch_display_table(watch_table[["_row_id", *WATCH_COLUMNS]])
     st.caption("신규 자동수집 결과와 첨부 엑셀 기반 과거 데이터를 같은 컬럼 형식으로 합쳐서 표시합니다.")
     watch_stats_display = watch_stats if is_admin else mask_public_columns(watch_stats, ["수익금"])
     st.dataframe(watch_stats_display, width="stretch", hide_index=True)
@@ -1018,7 +1046,7 @@ with tab_watch:
         style_watch_table(visible_watch_table, watch_table_for_style),
         width="stretch",
         hide_index=True,
-        column_config={"_row_id": None},
+        column_config=watch_column_config(),
     )
     if is_admin:
         with st.expander("평균 매도가/수익금 입력"):
