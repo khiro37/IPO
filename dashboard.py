@@ -344,6 +344,13 @@ def prepare_watch_display_table(table):
     return display_table
 
 
+def prepare_watch_editor_table(table):
+    editor_table = table[["_row_id", "종목", "상장일", "공모가", "평균 매도가", "수익금"]].copy()
+    for col in ["공모가", "평균 매도가", "수익금"]:
+        editor_table[col] = pd.to_numeric(editor_table[col].map(parse_number), errors="coerce")
+    return editor_table
+
+
 def watch_column_config():
     config = {"_row_id": None}
     for col in WATCH_COMPETITION_COLUMNS:
@@ -1043,6 +1050,7 @@ with tab_watch:
     if selected_watch_year != "전체":
         watch_table = watch_table[pd.to_numeric(watch_table["_연도"], errors="coerce").eq(selected_watch_year)]
     watch_table = sort_watch_table(watch_table)
+    watch_editor_table = prepare_watch_editor_table(watch_table)
     watch_table = prepare_watch_display_table(watch_table[["_row_id", *WATCH_COLUMNS]])
     st.caption("신규 자동수집 결과와 첨부 엑셀 기반 과거 데이터를 같은 컬럼 형식으로 합쳐서 표시합니다.")
     watch_stats_display = watch_stats if is_admin else mask_public_columns(watch_stats, ["수익금"])
@@ -1057,12 +1065,18 @@ with tab_watch:
     if is_admin:
         with st.expander("평균 매도가/수익금 입력"):
             edited_watch_table = st.data_editor(
-                watch_table[["_row_id", "종목", "상장일", "공모가", "평균 매도가", "수익금"]],
+                watch_editor_table,
                 width="stretch",
                 hide_index=True,
                 disabled=["종목", "상장일", "공모가"],
-                column_config={"_row_id": None},
+                column_config={
+                    "_row_id": None,
+                    "공모가": st.column_config.NumberColumn("공모가", format="%,.0f"),
+                    "평균 매도가": st.column_config.NumberColumn("평균 매도가", format="%,.0f"),
+                    "수익금": st.column_config.NumberColumn("수익금", format="%,.0f"),
+                },
                 num_rows="fixed",
+                key="watch_manual_input_editor",
             )
             if st.button("평균 매도가/수익금 저장"):
                 save_manual_inputs_from_editor(edited_watch_table)
