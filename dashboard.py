@@ -61,6 +61,7 @@ WATCH_STATS_COLUMNS = [
 PROTECTED_COLUMNS = ["평균 매도가", "수익금"]
 WATCH_HIGHER_BETTER_COLUMNS = ["수요예측\n경쟁률", "일반청약\n경쟁률", "의무확약비율(전)", "의무확약비율(후)"]
 WATCH_LOWER_BETTER_COLUMNS = ["유통주식수 비율", "유통주식 비율(후)"]
+WATCH_COMPETITION_COLUMNS = ["수요예측\n경쟁률", "일반청약\n경쟁률"]
 WATCH_PERCENT_DISPLAY_COLUMNS = [
     "의무확약비율(전)",
     "의무확약비율(후)",
@@ -180,11 +181,11 @@ def parse_number(value):
     return pd.to_numeric(text, errors="coerce")
 
 
-def comma_number_string(value):
+def comma_number_string(value, digits=0):
     number = parse_number(value)
     if pd.isna(number):
         return ""
-    return f"{float(number):,.0f}"
+    return f"{float(number):,.{digits}f}"
 
 
 def percent_string(value, digits=2):
@@ -212,11 +213,11 @@ def percent_display_from_display_values(values, digits=1):
     return f"{numbers.mean():.{digits}f}%"
 
 
-def average_display_number(values):
+def average_display_number(values, digits=0):
     numbers = values.map(parse_number).dropna()
     if numbers.empty:
         return ""
-    return comma_number_string(numbers.mean())
+    return comma_number_string(numbers.mean(), digits=digits)
 
 
 def sum_display_number(values):
@@ -243,7 +244,7 @@ def build_watch_stats(table, group_label="전체"):
         row["종목"] = f"{len(year_table):,}건"
         if not year_table.empty:
             for col in ["수요예측\n경쟁률", "일반청약\n경쟁률"]:
-                row[col] = average_display_number(year_table[col])
+                row[col] = average_display_number(year_table[col], digits=2)
             row["시가총액"] = market_cap_string(year_table["시가총액"].map(parse_number).dropna().mean())
             for col in [
                 "의무확약비율(전)",
@@ -334,6 +335,9 @@ def style_watch_table(display_table, full_table):
 
 def prepare_watch_display_table(table):
     display_table = table.copy()
+    for col in WATCH_COMPETITION_COLUMNS:
+        if col in display_table.columns:
+            display_table[col] = display_table[col].map(parse_number)
     for col in WATCH_PERCENT_DISPLAY_COLUMNS:
         if col in display_table.columns:
             display_table[col] = display_table[col].map(parse_number)
@@ -342,6 +346,8 @@ def prepare_watch_display_table(table):
 
 def watch_column_config():
     config = {"_row_id": None}
+    for col in WATCH_COMPETITION_COLUMNS:
+        config[col] = st.column_config.NumberColumn(col, format="%,.2f")
     for col in WATCH_PERCENT_DISPLAY_COLUMNS:
         config[col] = st.column_config.NumberColumn(col, format="%.2f%%")
     return config
