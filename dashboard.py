@@ -307,10 +307,14 @@ def market_cap_style(value):
     number = parse_number(value)
     if pd.isna(number):
         return ""
-    if number <= 1000:
+    if number < 1000:
         return "color: #B91C1C; font-weight: 800;"
-    if number >= 1500:
-        return "font-weight: 700;"
+    if number <= 1500:
+        return "color: #EF4444; font-weight: 600;"
+    if number > 30000:
+        return "color: #1D4ED8; font-weight: 800;"
+    if number > 10000:
+        return "color: #60A5FA; font-weight: 600;"
     return ""
 
 
