@@ -620,7 +620,7 @@ def load_history():
     if "증권사" in df.columns:
         df["증권사"] = df["증권사"].str.strip().replace("", "미기재")
     if "업종" in df.columns:
-        df["업종"] = df["업종"].str.strip().replace("", "미기재")
+        df["업종"] = df["업종"].str.strip()
     df = apply_spec_normalization(df)
     return df
 
@@ -979,6 +979,46 @@ with tab_factor:
             width="stretch",
         )
 
+    st.subheader("시가총액과 수익률")
+    market_cap_metric_data = build_return_metric_data(
+        factor_view,
+        selected_return_metrics,
+        required_columns=["시가총액_억원"],
+    )
+    if market_cap_metric_data.empty:
+        st.info("시가총액과 선택한 수익률을 함께 표시할 수 있는 데이터가 없습니다.")
+    else:
+        market_cap_tooltip = [
+            alt.Tooltip("연도:O"),
+            alt.Tooltip("종목:N"),
+            alt.Tooltip("업종:N"),
+            alt.Tooltip("증권사:N"),
+            alt.Tooltip("수익률구분:N", title="수익률 구분"),
+            alt.Tooltip("시가총액_억원:Q", title="시가총액(억원)", format=",.0f"),
+            alt.Tooltip("표시수익률:Q", title="수익률", format=".1%"),
+        ]
+        if is_admin:
+            market_cap_tooltip.append(alt.Tooltip("수익금:Q", title="수익금", format=",.0f"))
+        st.altair_chart(
+            alt.Chart(market_cap_metric_data)
+            .mark_circle(size=78, opacity=0.72)
+            .encode(
+                x=alt.X("시가총액_억원:Q", title="시가총액(억원)", axis=alt.Axis(format=",.0f")),
+                y=alt.Y("표시수익률:Q", title="수익률", axis=alt.Axis(format="%")),
+                color=alt.Color(
+                    "수익률구분:N",
+                    title="수익률 구분",
+                    scale=alt.Scale(
+                        domain=["시초가 수익률", "종가 수익률", "수익률"],
+                        range=["#2F80ED", "#F2994A", "#EB5757"],
+                    ),
+                ),
+                tooltip=market_cap_tooltip,
+            )
+            .properties(height=430),
+            width="stretch",
+        )
+
     st.subheader("업종별 평균 수익률")
     selected_industry_metrics = metric_dropdown_selector(
         "업종별 수익률 기준",
@@ -987,22 +1027,18 @@ with tab_factor:
         "industry_return_metric_selector",
     )
     industry_metric_data = build_return_metric_data(factor_view, selected_industry_metrics)
+    if not industry_metric_data.empty:
+        industry_metric_data = industry_metric_data[
+            industry_metric_data["업종"].fillna("").astype(str).str.strip().ne("")
+            & industry_metric_data["업종"].fillna("").astype(str).str.strip().ne("미기재")
+        ].copy()
     if industry_metric_data.empty:
         st.info("선택한 수익률을 집계할 수 있는 가격 데이터가 없습니다.")
     else:
         industry = (
             industry_metric_data.groupby(["업종", "수익률구분"], as_index=False)
             .agg(종목수=("종목", "count"), 평균수익률=("표시수익률", "mean"), 수익금=("수익금", "sum"))
-            .query("종목수 >= 2")
         )
-        top_industries = (
-            industry.groupby("업종")["평균수익률"]
-            .max()
-            .sort_values(ascending=False)
-            .head(20)
-            .index
-        )
-        industry = industry[industry["업종"].isin(top_industries)].copy()
         industry_tooltip = [
             alt.Tooltip("업종:N"),
             alt.Tooltip("수익률구분:N", title="수익률 구분"),
@@ -1027,7 +1063,7 @@ with tab_factor:
                 ),
                 tooltip=industry_tooltip,
             )
-            .properties(height=520),
+            .properties(height=max(520, industry["업종"].nunique() * 26)),
             width="stretch",
         )
 
