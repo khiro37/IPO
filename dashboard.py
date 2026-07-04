@@ -723,7 +723,7 @@ def metric_dropdown_selector(label, options, default, key):
 history = load_history()
 
 st.title("공모주 투자 대시보드")
-st.caption("기존 공모주 투자 엑셀을 표준화해 만든 분석 화면입니다.")
+st.caption("공모주 청약 지표와 상장 후 수익률을 한눈에 비교하는 투자 기록 대시보드입니다.")
 
 with st.sidebar:
     st.header("접속 모드")
@@ -766,7 +766,7 @@ with cols[3]:
     protected_metric_card("누적 수익금", money(total_profit, "원", 0), is_admin)
 
 tab_overview, tab_factor, tab_watch = st.tabs(
-    ["성과 요약", "투자 지표", "자동수집"]
+    ["성과 요약", "투자 지표", "공모주 청약 지표"]
 )
 
 with tab_overview:
@@ -1068,7 +1068,7 @@ with tab_factor:
         )
 
 with tab_watch:
-    st.subheader("자동수집 후보")
+    st.subheader("공모주 청약 지표")
     watch_df = pd.read_csv(WATCH_FILE) if WATCH_FILE.exists() else pd.DataFrame()
     watch_table = merge_watch_and_history(watch_df, history).fillna("")
     watch_table = apply_manual_inputs(watch_table)
@@ -1082,13 +1082,13 @@ with tab_watch:
     )
     watch_year_options = ["전체", *watch_years]
     default_watch_index = watch_year_options.index(date.today().year) if date.today().year in watch_year_options else 0
-    selected_watch_year = st.selectbox("자동수집 연도", watch_year_options, index=default_watch_index, key="watch_year")
+    selected_watch_year = st.selectbox("연도", watch_year_options, index=default_watch_index, key="watch_year")
     if selected_watch_year != "전체":
         watch_table = watch_table[pd.to_numeric(watch_table["_연도"], errors="coerce").eq(selected_watch_year)]
     watch_table = sort_watch_table(watch_table)
     watch_editor_table = prepare_watch_editor_table(watch_table)
     watch_table = prepare_watch_display_table(watch_table[["_row_id", *WATCH_COLUMNS]])
-    st.caption("신규 자동수집 결과와 첨부 엑셀 기반 과거 데이터를 같은 컬럼 형식으로 합쳐서 표시합니다.")
+    st.caption("청약 경쟁률, 확약비율, 유통비율, 시가총액과 상장 후 가격 흐름을 종목별로 정리합니다.")
     watch_stats_display = watch_stats if is_admin else mask_public_columns(watch_stats, ["수익금"])
     st.dataframe(watch_stats_display, width="stretch", hide_index=True)
     visible_watch_table = watch_table if is_admin else mask_public_columns(watch_table)
