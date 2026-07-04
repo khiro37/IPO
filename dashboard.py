@@ -14,7 +14,7 @@ WATCH_FILE = BASE_DIR / "ipo_watch_results.csv"
 MANUAL_INPUT_FILE = BASE_DIR / "ipo_manual_inputs.csv"
 
 
-st.set_page_config(page_title="공모주 투자 대시보드", layout="wide")
+st.set_page_config(page_title="공모주 투자 대시보드 (By 워렌넝구)", layout="wide")
 
 
 WATCH_COLUMNS = [
@@ -335,6 +335,8 @@ def style_watch_table(display_table, full_table):
 
 def prepare_watch_display_table(table):
     display_table = table.copy()
+    if "시가총액" in display_table.columns:
+        display_table["시가총액"] = display_table["시가총액"].map(parse_number)
     for col in WATCH_COMPETITION_COLUMNS:
         if col in display_table.columns:
             display_table[col] = display_table[col].map(parse_number)
@@ -353,6 +355,7 @@ def prepare_watch_editor_table(table):
 
 def watch_column_config():
     config = {"_row_id": None}
+    config["시가총액"] = st.column_config.NumberColumn("시가총액", format="%,.0f억")
     for col in WATCH_COMPETITION_COLUMNS:
         config[col] = st.column_config.NumberColumn(col, format="%,.2f")
     for col in WATCH_PERCENT_DISPLAY_COLUMNS:
@@ -722,7 +725,7 @@ def metric_dropdown_selector(label, options, default, key):
 
 history = load_history()
 
-st.title("공모주 투자 대시보드")
+st.title("공모주 투자 대시보드 (By 워렌넝구)")
 st.caption("공모주 청약 지표와 상장 후 수익률을 한눈에 비교하는 투자 기록 대시보드입니다.")
 
 with st.sidebar:
@@ -979,7 +982,7 @@ with tab_factor:
             width="stretch",
         )
 
-    st.subheader("시가총액과 수익률")
+    st.subheader("상장일 기준 시가총액과 수익률")
     market_cap_metric_data = build_return_metric_data(
         factor_view,
         selected_return_metrics,
@@ -994,7 +997,7 @@ with tab_factor:
             alt.Tooltip("업종:N"),
             alt.Tooltip("증권사:N"),
             alt.Tooltip("수익률구분:N", title="수익률 구분"),
-            alt.Tooltip("시가총액_억원:Q", title="시가총액(억원)", format=",.0f"),
+            alt.Tooltip("시가총액_억원:Q", title="상장일 기준 시가총액(억원)", format=",.0f"),
             alt.Tooltip("표시수익률:Q", title="수익률", format=".1%"),
         ]
         if is_admin:
@@ -1003,7 +1006,14 @@ with tab_factor:
             alt.Chart(market_cap_metric_data)
             .mark_circle(size=78, opacity=0.72)
             .encode(
-                x=alt.X("시가총액_억원:Q", title="시가총액(억원)", axis=alt.Axis(format=",.0f")),
+                x=alt.X(
+                    "시가총액_억원:Q",
+                    title="상장일 기준 시가총액",
+                    axis=alt.Axis(
+                        labelExpr="datum.value >= 10000 ? format(datum.value / 10000, '.1f') + '조' : format(datum.value, ',.0f') + '억'"
+                    ),
+                    scale=alt.Scale(type="sqrt", zero=True),
+                ),
                 y=alt.Y("표시수익률:Q", title="수익률", axis=alt.Axis(format="%")),
                 color=alt.Color(
                     "수익률구분:N",
