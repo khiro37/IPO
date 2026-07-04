@@ -376,6 +376,23 @@ def market_cap_axis_values(max_value):
     return [*range(0, 10_001, 1000), *range(20_000, max_tick + 10_000, 10_000)]
 
 
+MARKET_CAP_COMPRESSION_BASE = 10_000
+MARKET_CAP_COMPRESSION_RATIO = 50
+
+
+def compress_market_cap(value):
+    if pd.isna(value):
+        return pd.NA
+    value = float(value)
+    if value <= MARKET_CAP_COMPRESSION_BASE:
+        return value
+    return MARKET_CAP_COMPRESSION_BASE + ((value - MARKET_CAP_COMPRESSION_BASE) / MARKET_CAP_COMPRESSION_RATIO)
+
+
+def compressed_market_cap_axis_values(max_value):
+    return [compress_market_cap(value) for value in market_cap_axis_values(max_value)]
+
+
 PERCENT_TABLE_COLUMNS = [
     "밴드상단_초과비율",
     "의무확약비율_전",
@@ -1004,7 +1021,9 @@ with tab_factor:
     if market_cap_metric_data.empty:
         st.info("시가총액과 선택한 수익률을 함께 표시할 수 있는 데이터가 없습니다.")
     else:
-        market_cap_ticks = market_cap_axis_values(market_cap_metric_data["시가총액_억원"].max())
+        market_cap_metric_data = market_cap_metric_data.copy()
+        market_cap_metric_data["시가총액_압축축"] = market_cap_metric_data["시가총액_억원"].map(compress_market_cap)
+        market_cap_ticks = compressed_market_cap_axis_values(market_cap_metric_data["시가총액_억원"].max())
         market_cap_tooltip = [
             alt.Tooltip("연도:O"),
             alt.Tooltip("종목:N"),
@@ -1021,11 +1040,15 @@ with tab_factor:
             .mark_circle(size=78, opacity=0.72)
             .encode(
                 x=alt.X(
-                    "시가총액_억원:Q",
-                    title="상장일 기준 시가총액",
+                    "시가총액_압축축:Q",
+                    title="상장일 기준 시가총액: 0~1조 확대, 1조 초과 압축",
                     axis=alt.Axis(
                         values=market_cap_ticks,
-                        labelExpr="datum.value >= 10000 ? format(datum.value / 10000, '.1f') + '조' : format(datum.value, ',.0f') + '억'"
+                        labelExpr=(
+                            "datum.value >= 10000 ? "
+                            "format(((datum.value - 10000) * 50 + 10000) / 10000, '.0f') + '조' : "
+                            "format(datum.value, ',.0f') + '억'"
+                        ),
                     ),
                     scale=alt.Scale(zero=True),
                 ),
@@ -1043,6 +1066,7 @@ with tab_factor:
             .properties(height=430),
             width="stretch",
         )
+        st.caption("시가총액 1조원 초과 구간은 차트 가독성을 위해 압축해서 표시합니다.")
 
     st.subheader("업종별 평균 수익률")
     selected_industry_metrics = metric_dropdown_selector(
