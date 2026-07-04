@@ -363,6 +363,19 @@ def watch_column_config():
     return config
 
 
+def market_cap_axis_values(max_value):
+    if pd.isna(max_value) or max_value <= 0:
+        return [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000]
+
+    max_value = min(float(max_value), 1_000_000)
+    if max_value <= 10_000:
+        max_tick = int(((max_value + 999) // 1000) * 1000)
+        return list(range(0, max_tick + 1000, 1000))
+
+    max_tick = int(((max_value + 9999) // 10000) * 10000)
+    return [*range(0, 10_001, 1000), *range(20_000, max_tick + 10_000, 10_000)]
+
+
 PERCENT_TABLE_COLUMNS = [
     "밴드상단_초과비율",
     "의무확약비율_전",
@@ -991,6 +1004,7 @@ with tab_factor:
     if market_cap_metric_data.empty:
         st.info("시가총액과 선택한 수익률을 함께 표시할 수 있는 데이터가 없습니다.")
     else:
+        market_cap_ticks = market_cap_axis_values(market_cap_metric_data["시가총액_억원"].max())
         market_cap_tooltip = [
             alt.Tooltip("연도:O"),
             alt.Tooltip("종목:N"),
@@ -1010,9 +1024,10 @@ with tab_factor:
                     "시가총액_억원:Q",
                     title="상장일 기준 시가총액",
                     axis=alt.Axis(
+                        values=market_cap_ticks,
                         labelExpr="datum.value >= 10000 ? format(datum.value / 10000, '.1f') + '조' : format(datum.value, ',.0f') + '억'"
                     ),
-                    scale=alt.Scale(type="sqrt", zero=True),
+                    scale=alt.Scale(zero=True),
                 ),
                 y=alt.Y("표시수익률:Q", title="수익률", axis=alt.Axis(format="%")),
                 color=alt.Color(
