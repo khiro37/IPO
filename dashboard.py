@@ -546,6 +546,44 @@ def apply_spec_normalization(df):
     return normalized
 
 
+def classify_industry_group(industry):
+    text = str(industry or "").strip()
+    compact = re.sub(r"\s+", "", text).lower()
+    if not compact:
+        return ""
+    if any(keyword in compact for keyword in ["스팩", "스펙", "spec"]):
+        return "스펙"
+    if any(keyword in compact for keyword in ["바이오", "제약", "의약", "의료", "진단", "치과", "항암", "유전체", "생명", "cmo", "cro"]):
+        return "바이오/헬스케어"
+    if any(keyword in compact for keyword in ["반도체", "팹리스", "비메모리", "전력반도체", "oled", "디스플레이"]):
+        return "반도체/디스플레이"
+    if any(keyword in compact for keyword in ["2차전지", "이차전지", "배터리", "폐배터리", "ess", "전기차"]):
+        return "2차전지/전기차"
+    if any(keyword in compact for keyword in ["ai", "소프트웨어", "sw", "it", "dx", "데이터", "빅데이터", "플랫폼", "보안", "디지털", "인터넷", "클라우드", "xr", "메타버스"]):
+        return "AI/소프트웨어"
+    if any(keyword in compact for keyword in ["로봇", "자동화", "스마트팩토리", "모터", "감속기", "라이다", "자율주행"]):
+        return "로봇/자동화"
+    if any(keyword in compact for keyword in ["게임", "엔터", "콘텐츠", "드라마", "영상", "웹툰", "광고", "미술품", "옥션"]):
+        return "콘텐츠/엔터"
+    if any(keyword in compact for keyword in ["금융", "은행", "보험", "벤처캐피", "리츠", "페이"]):
+        return "금융"
+    if any(keyword in compact for keyword in ["조선", "방산", "항공", "우주", "위성", "드론", "케이블"]):
+        return "조선/방산/항공"
+    if any(keyword in compact for keyword in ["자동차", "모빌리티", "차량", "전장", "렌터", "렌트"]):
+        return "자동차/모빌리티"
+    if any(keyword in compact for keyword in ["화학", "소재", "플라스틱", "철강", "금속", "복합소재", "화장품소재", "화장품원료", "마감재"]):
+        return "소재/화학"
+    if any(keyword in compact for keyword in ["기계", "장비", "부품", "모듈", "센서", "검사", "계측", "프린터", "현미경", "필터", "전자부품", "정밀", "유압", "공작", "금형"]):
+        return "기계/장비/부품"
+    if any(keyword in compact for keyword in ["화장품", "미용", "뷰티", "식품", "맥주", "의류", "봉제", "가구", "유아", "완구", "사료", "마스크", "도매", "서점", "정수기"]):
+        return "소비재"
+    if any(keyword in compact for keyword in ["에너지", "전력", "가스", "수소", "원자력", "풍력", "신재생", "스마트그리드", "충전", "epc"]):
+        return "에너지/전력/인프라"
+    if any(keyword in compact for keyword in ["건설", "건자재", "모듈러", "물류", "시스템엔지니어링", "시뮬레이터"]):
+        return "산업/인프라"
+    return "기타"
+
+
 def filter_by_industry_group(df, selected_group):
     if selected_group == "전체" or "업종" not in df.columns:
         return df
@@ -655,6 +693,8 @@ def load_history():
     if "업종" in df.columns:
         df["업종"] = df["업종"].str.strip()
     df = apply_spec_normalization(df)
+    if "업종" in df.columns:
+        df["업종그룹"] = df["업종"].map(classify_industry_group)
     return df
 
 
@@ -1068,7 +1108,7 @@ with tab_factor:
         )
         st.caption("시가총액 1조원 초과 구간은 차트 가독성을 위해 압축해서 표시합니다.")
 
-    st.subheader("업종별 평균 수익률")
+    st.subheader("업종그룹별 평균 수익률")
     selected_industry_metrics = metric_dropdown_selector(
         "업종별 수익률 기준",
         list(RETURN_METRIC_OPTIONS.keys()),
@@ -1078,20 +1118,26 @@ with tab_factor:
     industry_metric_data = build_return_metric_data(factor_view, selected_industry_metrics)
     if not industry_metric_data.empty:
         industry_metric_data = industry_metric_data[
-            industry_metric_data["업종"].fillna("").astype(str).str.strip().ne("")
-            & industry_metric_data["업종"].fillna("").astype(str).str.strip().ne("미기재")
+            industry_metric_data["업종그룹"].fillna("").astype(str).str.strip().ne("")
+            & industry_metric_data["업종그룹"].fillna("").astype(str).str.strip().ne("미기재")
         ].copy()
     if industry_metric_data.empty:
         st.info("선택한 수익률을 집계할 수 있는 가격 데이터가 없습니다.")
     else:
         industry = (
-            industry_metric_data.groupby(["업종", "수익률구분"], as_index=False)
-            .agg(종목수=("종목", "count"), 평균수익률=("표시수익률", "mean"), 수익금=("수익금", "sum"))
+            industry_metric_data.groupby(["업종그룹", "수익률구분"], as_index=False)
+            .agg(
+                종목수=("종목", "count"),
+                세부업종수=("업종", "nunique"),
+                평균수익률=("표시수익률", "mean"),
+                수익금=("수익금", "sum"),
+            )
         )
         industry_tooltip = [
-            alt.Tooltip("업종:N"),
+            alt.Tooltip("업종그룹:N", title="업종그룹"),
             alt.Tooltip("수익률구분:N", title="수익률 구분"),
             alt.Tooltip("종목수:Q"),
+            alt.Tooltip("세부업종수:Q", title="세부 업종 수"),
             alt.Tooltip("평균수익률:Q", title="평균 수익률", format=".1%"),
         ]
         if is_admin:
@@ -1101,7 +1147,7 @@ with tab_factor:
             .mark_bar(opacity=0.82)
             .encode(
                 x=alt.X("평균수익률:Q", title="평균 수익률", axis=alt.Axis(format="%")),
-                y=alt.Y("업종:N", sort=alt.SortField("평균수익률", order="descending"), title=""),
+                y=alt.Y("업종그룹:N", sort=alt.SortField("평균수익률", order="descending"), title=""),
                 color=alt.Color(
                     "수익률구분:N",
                     title="수익률 구분",
@@ -1112,7 +1158,7 @@ with tab_factor:
                 ),
                 tooltip=industry_tooltip,
             )
-            .properties(height=max(520, industry["업종"].nunique() * 26)),
+            .properties(height=max(460, industry["업종그룹"].nunique() * 34)),
             width="stretch",
         )
 
