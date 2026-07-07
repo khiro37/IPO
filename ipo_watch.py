@@ -621,13 +621,16 @@ def fetch_listing_price(stock_code, listing_date):
         },
     )
     text = decode_bytes(raw)
-    numbers = re.findall(r"\[(?:'|\")?(\d{8})(?:'|\")?,\s*([\d.]+),\s*([\d.]+),\s*([\d.]+),\s*([\d.]+),", text)
+    numbers = re.findall(
+        r"\[(?:'|\")?(\d{8})(?:'|\")?,\s*([\d.,]+),\s*([\d.,]+),\s*([\d.,]+),\s*([\d.,]+),",
+        text,
+    )
     if not numbers:
         return {}
     _, close_price, open_price, high_price, low_price = numbers[-1]
     return {
-        "시초가": float(open_price),
-        "첫날_종가": float(close_price),
+        "시초가": float(str(open_price).replace(",", "")),
+        "첫날_종가": float(str(close_price).replace(",", "")),
         "가격_근거": f"네이버 일별시세 {stock_code} {ymd}",
     }
 
@@ -636,7 +639,7 @@ def apply_listing_price(row, stock_code, run_date):
     listing_date = parse_short_date(row.get("상장일", ""), run_date.year)
     if not listing_date or run_date <= listing_date:
         return row
-    if row.get("시초가") and row.get("첫날_종가"):
+    if has_value(row.get("시초가")) and has_value(row.get("첫날_종가")):
         return row
     prices = fetch_listing_price(stock_code, listing_date)
     if not prices:
@@ -651,6 +654,59 @@ def apply_listing_price(row, stock_code, run_date):
         if pd.notna(close_price) and pd.notna(open_price) and open_price:
             row["종가_수익률"] = close_price / open_price - 1
     return row
+
+
+def update_existing_listing_prices(df, run_date, refresh_corp_codes=False):
+    if df.empty:
+        return df
+
+    api_key = load_dart_api_key()
+    if not api_key:
+        raise RuntimeError("DART API 키가 없습니다. DART_API_KEY 환경변수를 설정하세요.")
+
+    corp_codes = load_corp_codes(api_key, refresh=refresh_corp_codes)
+    refreshed_corp_codes = False
+    rows = []
+
+    for source_row in df.to_dict("records"):
+        row = dict(source_row)
+        listing_date = parse_short_date(row.get("상장일", ""), run_date.year)
+        if not listing_date or run_date <= listing_date:
+            rows.append(row)
+            continue
+        if has_value(row.get("시초가")) and has_value(row.get("첫날_종가")):
+            rows.append(row)
+            continue
+
+        company_name = row.get("DART회사명") or row.get("회사")
+        corp_code, dart_name = resolve_corp(corp_codes, company_name)
+        stock_code = stock_code_for_corp(corp_codes, corp_code)
+        if not stock_code and not refreshed_corp_codes:
+            corp_codes = load_corp_codes(api_key, refresh=True)
+            refreshed_corp_codes = True
+            corp_code, dart_name = resolve_corp(corp_codes, company_name)
+            stock_code = stock_code_for_corp(corp_codes, corp_code)
+
+        if not stock_code:
+            row["오류"] = compact_text(
+                f"{row.get('오류', '')} / 상장일 시세 조회용 종목코드를 찾지 못했습니다."
+            ).strip(" /")
+            rows.append(row)
+            continue
+
+        try:
+            row = apply_listing_price(row, stock_code, run_date)
+            if dart_name and not has_value(row.get("DART회사명")):
+                row["DART회사명"] = dart_name
+        except Exception as error:
+            row["오류"] = compact_text(f"{row.get('오류', '')} / 상장일 시세 조회 실패: {error}").strip(" /")
+        rows.append(row)
+
+    updated = pd.DataFrame(rows)
+    for col in INTERNAL_COLUMNS:
+        if col not in updated.columns:
+            updated[col] = ""
+    return updated[INTERNAL_COLUMNS]
 
 
 def find_context(text, keywords, window=3500):
@@ -700,6 +756,13 @@ def safe_float(value):
         return float(str(value).replace(",", ""))
     except ValueError:
         return pd.NA
+
+
+def has_value(value):
+    if pd.isna(value):
+        return False
+    text = str(value).strip()
+    return bool(text) and text.lower() not in {"nan", "none", "<na>"}
 
 
 def round_to_integer(value):
@@ -1074,6 +1137,13 @@ def format_percent(value):
     return f"{float(value) * 100:.2f}%"
 
 
+def format_return_percent(value):
+    value = safe_float(value)
+    if pd.isna(value):
+        return ""
+    return f"{float(value) * 100:.2f}%"
+
+
 def format_market_cap(value):
     value = round_to_integer(value)
     if pd.isna(value):
@@ -1109,9 +1179,9 @@ def to_excel_shape(df):
     shaped["환매청구권"] = df["환매청구권"]
     shaped["공모가"] = df["공모가"].map(round_to_integer)
     shaped["시초가"] = df["시초가"].map(round_to_integer)
-    shaped["시초가 수익률"] = df["시초가_수익률"].map(format_percent)
+    shaped["시초가 수익률"] = df["시초가_수익률"].map(format_return_percent)
     shaped["첫날 종가"] = df["첫날_종가"].map(round_to_integer)
-    shaped["종가 수익률"] = df["종가_수익률"].map(format_percent)
+    shaped["종가 수익률"] = df["종가_수익률"].map(format_return_percent)
     shaped["평균 매도가"] = ""
     shaped["수익률"] = ""
     shaped["수익금"] = ""
@@ -1160,6 +1230,7 @@ def main():
     else:
         result = collect_ipo_watch(run_date, refresh_corp_codes=args.refresh_corp_codes)
     output = result if args.no_merge else merge_with_existing(result, RAW_OUTPUT_CSV)
+    output = update_existing_listing_prices(output, run_date, refresh_corp_codes=args.refresh_corp_codes)
 
     if args.dry_run:
         if output.empty:
