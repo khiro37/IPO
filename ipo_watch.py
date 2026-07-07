@@ -627,7 +627,7 @@ def fetch_listing_price(stock_code, listing_date):
     )
     if not numbers:
         return {}
-    _, close_price, open_price, high_price, low_price = numbers[-1]
+    _, open_price, high_price, low_price, close_price = numbers[-1]
     return {
         "시초가": float(str(open_price).replace(",", "")),
         "첫날_종가": float(str(close_price).replace(",", "")),
@@ -635,11 +635,11 @@ def fetch_listing_price(stock_code, listing_date):
     }
 
 
-def apply_listing_price(row, stock_code, run_date):
+def apply_listing_price(row, stock_code, run_date, force=False):
     listing_date = parse_short_date(row.get("상장일", ""), run_date.year)
     if not listing_date or run_date <= listing_date:
         return row
-    if has_value(row.get("시초가")) and has_value(row.get("첫날_종가")):
+    if not force and has_value(row.get("시초가")) and has_value(row.get("첫날_종가")):
         return row
     prices = fetch_listing_price(stock_code, listing_date)
     if not prices:
@@ -674,10 +674,6 @@ def update_existing_listing_prices(df, run_date, refresh_corp_codes=False):
         if not listing_date or run_date <= listing_date:
             rows.append(row)
             continue
-        if has_value(row.get("시초가")) and has_value(row.get("첫날_종가")):
-            rows.append(row)
-            continue
-
         company_name = row.get("DART회사명") or row.get("회사")
         corp_code, dart_name = resolve_corp(corp_codes, company_name)
         stock_code = stock_code_for_corp(corp_codes, corp_code)
@@ -695,7 +691,7 @@ def update_existing_listing_prices(df, run_date, refresh_corp_codes=False):
             continue
 
         try:
-            row = apply_listing_price(row, stock_code, run_date)
+            row = apply_listing_price(row, stock_code, run_date, force=True)
             if dart_name and not has_value(row.get("DART회사명")):
                 row["DART회사명"] = dart_name
         except Exception as error:
