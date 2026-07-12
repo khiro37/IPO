@@ -705,6 +705,58 @@ def update_existing_listing_prices(df, run_date, refresh_corp_codes=False):
     return updated[INTERNAL_COLUMNS]
 
 
+def update_existing_issuance_reports(df, run_date, refresh_corp_codes=False):
+    if df.empty:
+        return df
+
+    api_key = load_dart_api_key()
+    if not api_key:
+        raise RuntimeError("DART API 키가 없습니다. DART_API_KEY 환경변수를 설정하세요.")
+
+    corp_codes = load_corp_codes(api_key, refresh=refresh_corp_codes)
+    refreshed_corp_codes = False
+    rows = []
+
+    for source_row in df.to_dict("records"):
+        row = dict(source_row)
+        if has_value(row.get("발행실적_접수번호")) and has_value(row.get("의무확약비율_후")):
+            rows.append(row)
+            continue
+
+        listing_date = parse_short_date(row.get("상장일", ""), run_date.year)
+        if listing_date and run_date < listing_date - timedelta(days=7):
+            rows.append(row)
+            continue
+
+        company_name = row.get("DART회사명") or row.get("회사")
+        corp_code, dart_name = resolve_corp(corp_codes, company_name)
+        if not corp_code and not refreshed_corp_codes:
+            corp_codes = load_corp_codes(api_key, refresh=True)
+            refreshed_corp_codes = True
+            corp_code, dart_name = resolve_corp(corp_codes, company_name)
+
+        if not corp_code:
+            row["오류"] = compact_text(
+                f"{row.get('오류', '')} / 증권발행실적보고서 조회용 corp_code를 찾지 못했습니다."
+            ).strip(" /")
+            rows.append(row)
+            continue
+
+        try:
+            row = apply_issuance_report(api_key, corp_code, row, run_date)
+            if dart_name and not has_value(row.get("DART회사명")):
+                row["DART회사명"] = dart_name
+        except Exception as error:
+            row["오류"] = compact_text(f"{row.get('오류', '')} / 증권발행실적보고서 조회 실패: {error}").strip(" /")
+        rows.append(row)
+
+    updated = pd.DataFrame(rows)
+    for col in INTERNAL_COLUMNS:
+        if col not in updated.columns:
+            updated[col] = ""
+    return updated[INTERNAL_COLUMNS]
+
+
 def find_context(text, keywords, window=3500):
     compact = re.sub(r"\r\n?", "\n", text)
     flat = compact_text(compact)
@@ -1226,6 +1278,7 @@ def main():
     else:
         result = collect_ipo_watch(run_date, refresh_corp_codes=args.refresh_corp_codes)
     output = result if args.no_merge else merge_with_existing(result, RAW_OUTPUT_CSV)
+    output = update_existing_issuance_reports(output, run_date, refresh_corp_codes=args.refresh_corp_codes)
     output = update_existing_listing_prices(output, run_date, refresh_corp_codes=args.refresh_corp_codes)
 
     if args.dry_run:
