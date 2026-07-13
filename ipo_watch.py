@@ -871,7 +871,7 @@ def extract_offer_price(text):
 def extract_demand_competition(text):
     context = find_context(text, ["수요예측 참여 내역", "수요예측참여내역"], 6500)
     source_text = context or text
-    match = re.search(r"경쟁률(?:주\d+\))?\s+(.{0,700}?)(?:주\d+\)|\([나-힣]\)|수요예측 신청가격|$)", source_text)
+    match = re.search(r"경쟁률\s*(?:주\d+\))?\s+(.{0,900}?)(?:주\d+\)|\([나-힣]\)|수요예측 신청가격|$)", source_text)
     if match:
         values = numbers_from_line(match.group(1))
         if values:
@@ -959,12 +959,25 @@ def extract_market_cap(text, offer_price):
 
     shares, shares_source = extract_first(
         [
-            r"상장\s*예정\s*주식\s*수.{0,120}?([\d,]+)\s*주",
-            r"상장예정주식수.{0,120}?([\d,]+)\s*주",
+            r"상장\s*예정\s*주식\s*수\s*([\d,]+)\s*주",
+            r"상장예정주식수\s*([\d,]+)\s*주",
+            r"공모\s*후\s*주식수\s*\(E\).{0,120}?([\d,]+)\s*주",
         ],
         context or text,
     )
     shares = parse_money_number(shares)
+    if pd.isna(shares):
+        all_matches = list(
+            re.finditer(
+                r"(상장\s*예정\s*주식\s*수|상장예정주식수|공모\s*후\s*주식수\s*\(E\)).{0,80}?([\d,]+)\s*주",
+                text,
+                re.IGNORECASE,
+            )
+        )
+        if all_matches:
+            last_match = all_matches[-1]
+            shares = parse_money_number(last_match.group(2))
+            shares_source = compact_text(text[max(0, last_match.start() - 120): last_match.end() + 180])
     if pd.notna(shares) and pd.notna(offer_price):
         return float(shares) * float(offer_price) / 100_000_000, f"{shares_source} * 주당공모가액"
     return pd.NA, ""
@@ -1011,6 +1024,21 @@ def extract_putback_option(text):
 
 def extract_underwriter(text):
     context = find_context(text, ["대표주관회사", "인수인", "인수회사"], 3500)
+    source_text = context or text
+    role_matches = re.findall(
+        r"(?:대표\s*주관\s*회사|대표주관회사|공동\s*주관\s*회사|공동주관회사)\s+([가-힣A-Za-z0-9&().㈜]+)",
+        source_text,
+        re.IGNORECASE,
+    )
+    if role_matches:
+        names = []
+        for value in role_matches:
+            value = clean_underwriter_name(value)
+            if is_valid_underwriter(value) and value not in names:
+                names.append(value)
+        if names:
+            return ", ".join(names)
+
     value, _ = extract_last(
         [
             r"대표\s*주관\s*회사\s+([가-힣A-Za-z0-9&().㈜\s]+?)(?:\s+보통주|\s+기명식|\s+증권의종류|\s+인수수량|\s+주관|\s+공동|\s|$)",
@@ -1020,10 +1048,28 @@ def extract_underwriter(text):
     )
     if pd.isna(value):
         return ""
+    return clean_underwriter_name(value)
+
+
+def clean_underwriter_name(value):
     value = compact_text(value)
     value = re.sub(r"㈜|주식회사|\(주\)", "", value)
     value = re.split(r"\s{2,}|[,/]", value)[0]
-    return compact_text(value)
+    value = value.strip(" ,")
+    replacements = {
+        "케이비증권": "KB증권",
+        "KB증권": "KB증권",
+        "아이비케이투자증권": "IBK투자증권",
+        "IBK투자증권": "IBK투자증권",
+    }
+    return replacements.get(value, compact_text(value))
+
+
+def is_valid_underwriter(value):
+    value = compact_text(value)
+    if not value or value in {"및", "-", "해당사항없음"}:
+        return False
+    return bool(re.search(r"증권|투자", value))
 
 
 def parse_prospectus_metrics(text):
@@ -1090,7 +1136,7 @@ def collect_ipo_watch(run_date, refresh_corp_codes=False):
             row.update(filing)
             text = download_document_text(api_key, filing["접수번호"])
             prospectus_metrics = parse_prospectus_metrics(text)
-            if not prospectus_metrics.get("증권사") and row.get("증권사"):
+            if not is_valid_underwriter(prospectus_metrics.get("증권사")) and row.get("증권사"):
                 prospectus_metrics["증권사"] = row["증권사"]
             row.update(prospectus_metrics)
             row = apply_issuance_report(api_key, corp_code, row, run_date)
@@ -1143,7 +1189,7 @@ def collect_company_prospectuses(company_names, run_date, search_start, search_e
             row.update(filing)
             text = download_document_text(api_key, filing["접수번호"])
             prospectus_metrics = parse_prospectus_metrics(text)
-            if not prospectus_metrics.get("증권사") and row.get("증권사"):
+            if not is_valid_underwriter(prospectus_metrics.get("증권사")) and row.get("증권사"):
                 prospectus_metrics["증권사"] = row["증권사"]
             row.update(prospectus_metrics)
             row = apply_issuance_report(api_key, corp_code, row, run_date)
