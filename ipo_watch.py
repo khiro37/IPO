@@ -871,7 +871,10 @@ def extract_offer_price(text):
 def extract_demand_competition(text):
     context = find_context(text, ["수요예측 참여 내역", "수요예측참여내역"], 6500)
     source_text = context or text
-    match = re.search(r"경쟁률\s*(?:주\d+\))?\s+(.{0,900}?)(?:주\d+\)|\([나-힣]\)|수요예측 신청가격|$)", source_text)
+    match = re.search(
+        r"경쟁률\s*(?:\(\s*주\d+\s*\)|주\d+\))?\s+(.{0,900}?)(?:주\d+\)|\([나-힣]\)|수요예측 신청가격|$)",
+        source_text,
+    )
     if match:
         values = numbers_from_line(match.group(1))
         if values:
@@ -959,9 +962,10 @@ def extract_market_cap(text, offer_price):
 
     shares, shares_source = extract_first(
         [
-            r"상장\s*예정\s*주식\s*수\s*([\d,]+)\s*주",
-            r"상장예정주식수\s*([\d,]+)\s*주",
-            r"공모\s*후\s*주식수\s*\(E\).{0,120}?([\d,]+)\s*주",
+            r"상장\s*예정\s*(?:주식|증권)\s*수\s*([\d,]+)\s*(?:주|DR)",
+            r"상장예정(?:주식|증권)수\s*([\d,]+)\s*(?:주|DR)",
+            r"공모\s*후\s*주식수\s*\(E\).{0,120}?([\d,]+)\s*(?:주|DR)",
+            r"공모\s*후\s*주주\s*합계.{0,120}?([\d,]+)\s*100(?:\.00)?%",
         ],
         context or text,
     )
@@ -969,7 +973,7 @@ def extract_market_cap(text, offer_price):
     if pd.isna(shares):
         all_matches = list(
             re.finditer(
-                r"(상장\s*예정\s*주식\s*수|상장예정주식수|공모\s*후\s*주식수\s*\(E\)).{0,80}?([\d,]+)\s*주",
+                r"(상장\s*예정\s*(?:주식|증권)\s*수|상장예정(?:주식|증권)수|공모\s*후\s*주식수\s*\(E\)).{0,80}?([\d,]+)\s*(?:주|DR)",
                 text,
                 re.IGNORECASE,
             )
@@ -985,20 +989,45 @@ def extract_market_cap(text, offer_price):
 
 def extract_float_shares(text):
     context = find_context(text, ["유통가능", "상장직후 유통", "상장 후 유통"], 7000)
+    source_text = context or text
+    special_sentence = re.search(
+        r"(?:이를\s*제외한|합산하여\s*총|출회가\s*가능한\s*유통가능물량.{0,80}?)\s*([\d,]+)\s*(?:주|DR)\s*\(\s*공모\s*후\s*기준\s*([\d.]+)\s*%\s*\).{0,220}?유통가능",
+        source_text,
+    )
+    if not special_sentence:
+        special_sentence = re.search(
+            r"유통가능.{0,220}?([\d,]+)\s*(?:주|DR)\s*\(\s*공모\s*후\s*기준\s*([\d.]+)\s*%\s*\)",
+            source_text,
+        )
+    if not special_sentence and source_text != text:
+        source_text = compact_text(text)
+        special_sentence = re.search(
+            r"(?:이를\s*제외한|합산하여\s*총|출회가\s*가능한\s*유통가능물량.{0,80}?)\s*([\d,]+)\s*(?:주|DR)\s*\(\s*공모\s*후\s*기준\s*([\d.]+)\s*%\s*\).{0,220}?유통가능",
+            source_text,
+        )
+        if not special_sentence:
+            special_sentence = re.search(
+                r"유통가능.{0,220}?([\d,]+)\s*(?:주|DR)\s*\(\s*공모\s*후\s*기준\s*([\d.]+)\s*%\s*\)",
+                source_text,
+            )
+    if special_sentence:
+        source = compact_text(source_text[max(0, special_sentence.start() - 120): special_sentence.end() + 180])
+        return parse_money_number(special_sentence.group(1)), parse_money_number(special_sentence.group(2)), source
+
     special = re.search(
         r"의무보유\s*수량을\s*제외한\s*주식수\s*([\d,]+)\s*주\s*\(\s*([\d.]+)\s*%\s*\).{0,120}?유통가능",
-        context or text,
+        source_text,
     )
     if special:
-        source = compact_text((context or text)[max(0, special.start() - 120): special.end() + 180])
+        source = compact_text(source_text[max(0, special.start() - 120): special.end() + 180])
         return parse_money_number(special.group(1)), parse_money_number(special.group(2)), source
 
     shares, source = extract_first(
         [
-            r"유통가능(?:주식수|물량|주식).{0,180}?([\d,]+)\s*주",
-            r"상장\s*(?:직후|후).{0,80}?유통가능.{0,180}?([\d,]+)\s*주",
+            r"유통가능(?:주식수|물량|주식).{0,180}?([\d,]+)\s*(?:주|DR)",
+            r"상장\s*(?:직후|후).{0,80}?유통가능.{0,180}?([\d,]+)\s*(?:주|DR)",
         ],
-        context or text,
+        source_text,
     )
     ratio, ratio_source = extract_first(
         [
