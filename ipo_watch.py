@@ -1003,6 +1003,23 @@ def extract_market_cap(text, offer_price):
 def extract_float_shares(text):
     context = find_context(text, ["유통가능", "상장직후 유통", "상장 후 유통"], 7000)
     source_text = context or text
+    listing_day_source = source_text
+    listing_day_row = re.search(
+        r"(?:상장일|상장\s*직후|상장직후)\s*유통가능\s*([\d,]+)\s*(?:주|DR)?\s*([\d.]+)\s*%",
+        listing_day_source,
+        re.IGNORECASE,
+    )
+    if not listing_day_row and source_text != text:
+        listing_day_source = compact_text(text)
+        listing_day_row = re.search(
+            r"(?:상장일|상장\s*직후|상장직후)\s*유통가능\s*([\d,]+)\s*(?:주|DR)?\s*([\d.]+)\s*%",
+            listing_day_source,
+            re.IGNORECASE,
+        )
+    if listing_day_row:
+        source = compact_text(listing_day_source[max(0, listing_day_row.start() - 120): listing_day_row.end() + 180])
+        return parse_money_number(listing_day_row.group(1)), parse_money_number(listing_day_row.group(2)), source
+
     special_sentence = re.search(
         r"(?:이를\s*제외한|합산하여\s*총|출회가\s*가능한\s*유통가능물량.{0,80}?)\s*([\d,]+)\s*(?:주|DR)\s*\(\s*공모\s*후\s*기준\s*([\d.]+)\s*%\s*\).{0,220}?유통가능",
         source_text,
