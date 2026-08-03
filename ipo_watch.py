@@ -20,6 +20,7 @@ PROJECT_DIR = BASE_DIR.parent
 OUTPUT_CSV = BASE_DIR / "ipo_watch_results.csv"
 OUTPUT_XLSX = BASE_DIR / "ipo_watch_results.xlsx"
 RAW_OUTPUT_CSV = BASE_DIR / "ipo_watch_raw.csv"
+MANUAL_INPUT_CSV = BASE_DIR / "ipo_manual_inputs.csv"
 CORP_CODE_CACHE = BASE_DIR / "corp_codes.csv"
 
 NAVER_IPO_URL = "https://finance.naver.com/sise/ipo.naver"
@@ -93,6 +94,9 @@ EXCEL_COLUMNS = [
     "수익금",
     "세금 고려",
 ]
+
+MANUAL_RESULT_COLUMNS = ["평균 매도가", "수익금"]
+RESULT_KEY_COLUMNS = ["종목", "상장일", "공모가", "증권사"]
 
 
 class TextExtractor(HTMLParser):
@@ -1312,6 +1316,78 @@ def to_excel_shape(df):
     return shaped[EXCEL_COLUMNS]
 
 
+def normalize_key_value(value):
+    text = str(value or "").strip()
+    if text.endswith(".0"):
+        text = text[:-2]
+    return text.replace(",", "")
+
+
+def result_row_key(row):
+    parts = [normalize_key_value(row.get(col, "")) for col in RESULT_KEY_COLUMNS]
+    return "|".join(parts)
+
+
+def apply_existing_manual_result_values(excel_df, output_csv=OUTPUT_CSV):
+    """Keep manually entered sell price/profit when auto collection refreshes rows."""
+    if excel_df.empty:
+        return excel_df
+    manual_rows = {}
+    if output_csv.exists():
+        try:
+            old_df = pd.read_csv(output_csv, dtype=str).fillna("")
+        except Exception:
+            old_df = pd.DataFrame()
+        if not old_df.empty:
+            for col in EXCEL_COLUMNS:
+                if col not in old_df.columns:
+                    old_df[col] = ""
+            for _, row in old_df.iterrows():
+                values = {
+                    col: str(row.get(col, "")).strip()
+                    for col in MANUAL_RESULT_COLUMNS
+                    if str(row.get(col, "")).strip()
+                }
+                if values:
+                    manual_rows[result_row_key(row)] = values
+    if MANUAL_INPUT_CSV.exists():
+        try:
+            manual_df = pd.read_csv(MANUAL_INPUT_CSV, dtype=str).fillna("")
+        except Exception:
+            manual_df = pd.DataFrame()
+        if not manual_df.empty and "_row_id" in manual_df.columns:
+            for _, row in manual_df.iterrows():
+                row_id = str(row.get("_row_id", "")).strip()
+                values = {
+                    col: str(row.get(col, "")).strip()
+                    for col in MANUAL_RESULT_COLUMNS
+                    if str(row.get(col, "")).strip()
+                }
+                if row_id and values:
+                    manual_rows[row_id] = values
+    if not manual_rows:
+        return excel_df
+
+    restored = excel_df.copy()
+    for idx, row in restored.iterrows():
+        values = manual_rows.get(result_row_key(row), {})
+        for col, value in values.items():
+            restored.at[idx, col] = value
+    restored = recalculate_manual_return_columns(restored)
+    return restored
+
+
+def recalculate_manual_return_columns(excel_df):
+    updated = excel_df.copy()
+    if not {"공모가", "평균 매도가", "수익률"}.issubset(updated.columns):
+        return updated
+    offer = updated["공모가"].map(safe_float)
+    avg_sell = updated["평균 매도가"].map(safe_float)
+    has_avg = offer.notna() & avg_sell.notna() & offer.ne(0)
+    updated.loc[has_avg, "수익률"] = ((avg_sell[has_avg] - offer[has_avg]) / offer[has_avg]).map(format_return_percent)
+    return updated
+
+
 def save_outputs(df, output_csv=OUTPUT_CSV, output_xlsx=OUTPUT_XLSX, raw_output_csv=RAW_OUTPUT_CSV):
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     for col in INTERNAL_COLUMNS:
@@ -1320,6 +1396,7 @@ def save_outputs(df, output_csv=OUTPUT_CSV, output_xlsx=OUTPUT_XLSX, raw_output_
     raw_df = df[INTERNAL_COLUMNS]
     raw_df.to_csv(raw_output_csv, index=False, encoding="utf-8-sig")
     excel_df = to_excel_shape(raw_df)
+    excel_df = apply_existing_manual_result_values(excel_df, output_csv)
     excel_df.to_csv(output_csv, index=False, encoding="utf-8-sig")
     with pd.ExcelWriter(output_xlsx, engine="openpyxl") as writer:
         excel_df.to_excel(writer, index=False, sheet_name="IPO자동수집")
