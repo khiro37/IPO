@@ -424,7 +424,14 @@ def naver_ipo_candidates(run_date):
         if not parsed["회사"]:
             continue
         subscription_start = datetime.strptime(parsed["개인청약_시작일"], "%Y-%m-%d").date() if parsed["개인청약_시작일"] else None
-        if subscription_start != target_date:
+        subscription_end = datetime.strptime(parsed["개인청약_종료일"], "%Y-%m-%d").date() if parsed["개인청약_종료일"] else None
+        is_starting_tomorrow = subscription_start == target_date
+        is_currently_open = (
+            subscription_start is not None
+            and subscription_start <= run_date
+            and (subscription_end is None or run_date <= subscription_end)
+        )
+        if not (is_starting_tomorrow or is_currently_open):
             continue
         parsed["네이버_일정열"] = "개인청약"
         candidates.append(parsed)
@@ -966,6 +973,8 @@ def extract_market_cap(text, offer_price):
 
     shares, shares_source = extract_first(
         [
+            r"총\s*상장\s*예정\s*(?:주식|증권)\s*수(?:는|는\s*총)?\s*([\d,]+)\s*(?:주|DR)",
+            r"총\s*상장예정(?:주식|증권)수(?:는|는\s*총)?\s*([\d,]+)\s*(?:주|DR)",
             r"상장\s*예정\s*(?:주식|증권)\s*수\s*([\d,]+)\s*(?:주|DR)",
             r"상장예정(?:주식|증권)수\s*([\d,]+)\s*(?:주|DR)",
             r"공모\s*후\s*주식수\s*\(E\).{0,120}?([\d,]+)\s*(?:주|DR)",
@@ -977,7 +986,7 @@ def extract_market_cap(text, offer_price):
     if pd.isna(shares):
         all_matches = list(
             re.finditer(
-                r"(상장\s*예정\s*(?:주식|증권)\s*수|상장예정(?:주식|증권)수|공모\s*후\s*주식수\s*\(E\)).{0,80}?([\d,]+)\s*(?:주|DR)",
+                r"(총\s*상장\s*예정\s*(?:주식|증권)\s*수|총\s*상장예정(?:주식|증권)수|상장\s*예정\s*(?:주식|증권)\s*수|상장예정(?:주식|증권)수|공모\s*후\s*주식수\s*\(E\)).{0,80}?([\d,]+)\s*(?:주|DR)",
                 text,
                 re.IGNORECASE,
             )
