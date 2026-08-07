@@ -1260,19 +1260,28 @@ def collect_company_prospectuses(company_names, run_date, search_start, search_e
 
 
 def merge_with_existing(new_df, output_csv):
-    key_cols = ["작업일", "회사", "개인청약_시작일", "접수번호"]
     if output_csv.exists():
         old_df = pd.read_csv(output_csv, dtype=str).fillna("")
         combined = pd.concat([old_df, new_df.astype(str).fillna("")], ignore_index=True)
     else:
         combined = new_df.astype(str).fillna("")
-    for col in key_cols:
+    key_cols = ["회사", "상장일", "개인청약_시작일", "접수번호"]
+    for col in key_cols + INTERNAL_COLUMNS:
         if col not in combined.columns:
             combined[col] = ""
-    combined = combined.drop_duplicates(subset=key_cols, keep="last")
-    for col in INTERNAL_COLUMNS:
-        if col not in combined.columns:
-            combined[col] = ""
+    combined["_dedupe_company"] = combined["회사"].astype(str).str.strip()
+    combined["_dedupe_event"] = (
+        combined["상장일"].astype(str).str.strip()
+        .where(combined["상장일"].astype(str).str.strip().ne(""), combined["개인청약_시작일"].astype(str).str.strip())
+        .where(lambda value: value.ne(""), combined["접수번호"].astype(str).str.strip())
+    )
+    combined["_dedupe_key"] = combined["_dedupe_company"] + "|" + combined["_dedupe_event"]
+    combined["_complete_score"] = combined[INTERNAL_COLUMNS].astype(str).apply(lambda row: row.str.strip().ne("").sum(), axis=1)
+    combined = (
+        combined.sort_values(["_dedupe_key", "_complete_score", "작업일"])
+        .drop_duplicates(subset=["_dedupe_key"], keep="last")
+        .drop(columns=["_dedupe_company", "_dedupe_event", "_dedupe_key", "_complete_score"])
+    )
     return combined[INTERNAL_COLUMNS]
 
 

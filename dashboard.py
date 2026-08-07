@@ -492,6 +492,12 @@ def watch_file_to_table(df):
         "_row_id",
         make_row_id(table["종목"], table["상장일"], table["공모가"], table["증권사"]),
     )
+    table["_complete_score"] = table.astype(str).apply(lambda row: row.str.strip().ne("").sum(), axis=1)
+    table = (
+        table.sort_values(["_row_id", "_complete_score"])
+        .drop_duplicates("_row_id", keep="last")
+        .drop(columns=["_complete_score"])
+    )
     return table
 
 
