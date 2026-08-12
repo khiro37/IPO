@@ -54,7 +54,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add ipo_watch_results.csv ipo_watch_results.xlsx ipo_watch_raw.csv corp_codes.csv
+          git add ipo_watch_results.csv ipo_watch_results.xlsx ipo_watch_raw.csv ipo_manual_inputs.csv corp_codes.csv
           if git diff --cached --quiet; then
             echo "No IPO data changes to commit."
             exit 0

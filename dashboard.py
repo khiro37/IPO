@@ -1,7 +1,12 @@
 from pathlib import Path
+import base64
+import json
 import os
 import re
 from datetime import date
+from urllib.error import HTTPError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 import altair as alt
 import pandas as pd
@@ -11,7 +16,9 @@ import streamlit as st
 BASE_DIR = Path(__file__).resolve().parent
 HISTORY_FILE = BASE_DIR / "ipo_history.csv"
 WATCH_FILE = BASE_DIR / "ipo_watch_results.csv"
+WATCH_XLSX_FILE = BASE_DIR / "ipo_watch_results.xlsx"
 MANUAL_INPUT_FILE = BASE_DIR / "ipo_manual_inputs.csv"
+GITHUB_MANUAL_INPUT_PATH = "ipo_manual_inputs.csv"
 
 
 st.set_page_config(page_title="공모주 투자 대시보드 (By 워렌넝구)", layout="wide")
@@ -649,6 +656,107 @@ def save_manual_inputs_from_editor(edited_table):
     updates = updates[has_value]
     manual = pd.concat([manual, updates], ignore_index=True)
     manual.to_csv(MANUAL_INPUT_FILE, index=False, encoding="utf-8-sig")
+    persist_manual_inputs_to_watch_file(updates)
+    return persist_manual_inputs_to_github(MANUAL_INPUT_FILE)
+
+
+def app_secret(name, default=""):
+    try:
+        value = st.secrets.get(name, default)
+    except Exception:
+        value = os.getenv(name, default)
+    return str(value).strip() if value is not None else default
+
+
+def persist_manual_inputs_to_github(path):
+    token = (
+        app_secret("IPO_GITHUB_TOKEN")
+        or app_secret("GITHUB_TOKEN")
+        or app_secret("GH_TOKEN")
+    )
+    if not token or not path.exists():
+        return False
+
+    repo = app_secret("IPO_GITHUB_REPO", "khiro37/IPO")
+    branch = app_secret("IPO_GITHUB_BRANCH", "main")
+    repo_path = app_secret("IPO_MANUAL_INPUT_PATH", GITHUB_MANUAL_INPUT_PATH)
+    encoded_path = "/".join(quote(part) for part in repo_path.split("/"))
+    api_url = f"https://api.github.com/repos/{repo}/contents/{encoded_path}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "ipo-dashboard",
+    }
+
+    sha = None
+    try:
+        get_request = Request(f"{api_url}?ref={quote(branch)}", headers=headers)
+        with urlopen(get_request, timeout=20) as response:
+            sha = json.loads(response.read().decode("utf-8")).get("sha")
+    except HTTPError as error:
+        if error.code != 404:
+            return False
+    except Exception:
+        return False
+
+    content = base64.b64encode(path.read_bytes()).decode("ascii")
+    payload = {
+        "message": "Update IPO manual inputs",
+        "content": content,
+        "branch": branch,
+    }
+    if sha:
+        payload["sha"] = sha
+    try:
+        put_request = Request(
+            api_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={**headers, "Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urlopen(put_request, timeout=20):
+            return True
+    except Exception:
+        return False
+
+
+def persist_manual_inputs_to_watch_file(updates):
+    if updates.empty or not WATCH_FILE.exists():
+        return
+    try:
+        watch = pd.read_csv(WATCH_FILE, dtype=str).fillna("")
+    except Exception:
+        return
+    required = {"종목", "상장일", "공모가", "증권사"}
+    if not required.issubset(watch.columns):
+        return
+
+    watch["_row_id"] = make_row_id(watch["종목"], watch["상장일"], watch["공모가"], watch["증권사"])
+    for col in MANUAL_INPUT_COLUMNS:
+        if col not in updates.columns:
+            updates[col] = ""
+    update_map = updates.set_index("_row_id")[["평균 매도가", "수익금"]].fillna("").astype(str).to_dict("index")
+    for idx, row in watch.iterrows():
+        values = update_map.get(row["_row_id"])
+        if not values:
+            continue
+        for col in ["평균 매도가", "수익금"]:
+            value = str(values.get(col, "")).strip()
+            if value and value.lower() != "nan":
+                watch.at[idx, col] = value
+
+    offer_price = watch["공모가"].map(parse_number)
+    avg_price = watch["평균 매도가"].map(parse_number)
+    has_avg = offer_price.notna() & avg_price.notna() & offer_price.ne(0)
+    watch.loc[has_avg, "수익률"] = ((avg_price[has_avg] - offer_price[has_avg]) / offer_price[has_avg]).map(percent_string)
+    watch = watch.drop(columns=["_row_id"])
+    watch.to_csv(WATCH_FILE, index=False, encoding="utf-8-sig")
+    try:
+        with pd.ExcelWriter(WATCH_XLSX_FILE, engine="openpyxl") as writer:
+            watch.to_excel(writer, index=False, sheet_name="IPO자동수집")
+    except Exception:
+        pass
 
 
 def format_watch_table(table):
@@ -1220,6 +1328,9 @@ with tab_watch:
                 key="watch_manual_input_editor",
             )
             if st.button("평균 매도가/수익금 저장"):
-                save_manual_inputs_from_editor(edited_watch_table)
-                st.success("입력값을 저장했습니다.")
+                github_saved = save_manual_inputs_from_editor(edited_watch_table)
+                if github_saved:
+                    st.success("입력값을 저장하고 GitHub에도 반영했습니다.")
+                else:
+                    st.success("입력값을 로컬 파일에 저장했습니다. 배포 환경에서 영구 저장하려면 IPO_GITHUB_TOKEN secret을 설정하세요.")
                 st.rerun()

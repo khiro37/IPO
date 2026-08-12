@@ -1390,16 +1390,18 @@ def apply_existing_manual_result_values(excel_df, output_csv=OUTPUT_CSV):
             manual_df = pd.read_csv(MANUAL_INPUT_CSV, dtype=str).fillna("")
         except Exception:
             manual_df = pd.DataFrame()
-        if not manual_df.empty and "_row_id" in manual_df.columns:
+        if not manual_df.empty:
             for _, row in manual_df.iterrows():
-                row_id = str(row.get("_row_id", "")).strip()
                 values = {
                     col: str(row.get(col, "")).strip()
                     for col in MANUAL_RESULT_COLUMNS
                     if str(row.get(col, "")).strip()
                 }
+                row_id = str(row.get("_row_id", "")).strip()
                 if row_id and values:
                     manual_rows[row_id] = values
+                if all(col in manual_df.columns for col in RESULT_KEY_COLUMNS) and values:
+                    manual_rows[result_row_key(row)] = values
     if not manual_rows:
         return excel_df
 
