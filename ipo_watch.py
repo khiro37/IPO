@@ -267,6 +267,61 @@ def stock_code_for_corp(corp_codes, corp_code):
     return str(matched.iloc[0].get("stock_code", "")).strip()
 
 
+def fetch_naver_stock_code_by_name(company_name):
+    company_name = compact_text(company_name)
+    if not company_name:
+        return ""
+    try:
+        raw = fetch_url(
+            "https://ac.finance.naver.com/ac",
+            {
+                "q": company_name,
+                "q_enc": "UTF-8",
+                "st": "111",
+                "r_format": "json",
+                "r_enc": "UTF-8",
+                "r_unicode": "0",
+                "t_koreng": "1",
+                "r_lt": "111",
+            },
+            timeout=20,
+            retries=2,
+            retry_delay=1,
+        )
+    except Exception:
+        return ""
+    text = decode_bytes(raw)
+    wanted = normalize_name(company_name)
+    candidates = re.findall(r'"code"\s*:\s*"([A-Za-z0-9]{6})".{0,500}?"name"\s*:\s*"([^"]+)"', text)
+    if not candidates:
+        candidates = re.findall(r'"name"\s*:\s*"([^"]+)".{0,500}?"code"\s*:\s*"([A-Za-z0-9]{6})"', text)
+        candidates = [(code, name) for name, code in candidates]
+    for code, name in candidates:
+        normalized = normalize_name(name)
+        if wanted and (wanted == normalized or wanted in normalized or normalized in wanted):
+            return str(code).strip()
+    if candidates:
+        return candidates[0][0].strip()
+
+    try:
+        raw = fetch_url(
+            "https://finance.naver.com/search/searchList.naver",
+            {"query": company_name},
+            timeout=20,
+            retries=2,
+            retry_delay=1,
+        )
+    except Exception:
+        return ""
+    html = decode_bytes(raw)
+    matches = re.findall(r"itemcode=([A-Za-z0-9]{6}).{0,300}?>([^<]*?)</a>", html, re.IGNORECASE | re.DOTALL)
+    for code, name in matches:
+        normalized = normalize_name(re.sub(r"<.*?>", "", name))
+        if wanted and (wanted == normalized or wanted in normalized or normalized in wanted):
+            return str(code).strip()
+    return matches[0][0].strip() if matches else ""
+
+
 def normalize_column_name(value):
     if isinstance(value, tuple):
         value = " ".join([str(v) for v in value if str(v) != "nan"])
@@ -693,6 +748,8 @@ def update_existing_listing_prices(df, run_date, refresh_corp_codes=False):
             refreshed_corp_codes = True
             corp_code, dart_name = resolve_corp(corp_codes, company_name)
             stock_code = stock_code_for_corp(corp_codes, corp_code)
+        if not stock_code:
+            stock_code = fetch_naver_stock_code_by_name(row.get("회사") or company_name)
 
         if not stock_code:
             row["오류"] = compact_text(
@@ -1425,6 +1482,53 @@ def recalculate_manual_return_columns(excel_df):
     return updated
 
 
+def sync_manual_inputs_from_excel(excel_df):
+    if excel_df.empty:
+        return
+    rows = []
+    for _, row in excel_df.iterrows():
+        values = {
+            col: str(row.get(col, "")).strip()
+            for col in MANUAL_RESULT_COLUMNS
+            if str(row.get(col, "")).strip()
+        }
+        if not values:
+            continue
+        row_id = result_row_key(row)
+        if not row_id.strip("|"):
+            continue
+        rows.append({
+            "_row_id": row_id,
+            **{col: values.get(col, "") for col in MANUAL_RESULT_COLUMNS},
+            **{col: normalize_key_value(row.get(col, "")) for col in RESULT_KEY_COLUMNS},
+        })
+    if not rows:
+        return
+
+    new_manual = pd.DataFrame(rows)
+    if MANUAL_INPUT_CSV.exists():
+        try:
+            old_manual = pd.read_csv(MANUAL_INPUT_CSV, dtype=str).fillna("")
+        except Exception:
+            old_manual = pd.DataFrame()
+    else:
+        old_manual = pd.DataFrame()
+
+    combined = pd.concat([old_manual, new_manual], ignore_index=True).fillna("")
+    for col in ["_row_id", *MANUAL_RESULT_COLUMNS, *RESULT_KEY_COLUMNS]:
+        if col not in combined.columns:
+            combined[col] = ""
+    combined = (
+        combined.sort_values("_row_id")
+        .drop_duplicates(subset=["_row_id"], keep="last")
+    )
+    combined[["_row_id", *MANUAL_RESULT_COLUMNS, *RESULT_KEY_COLUMNS]].to_csv(
+        MANUAL_INPUT_CSV,
+        index=False,
+        encoding="utf-8-sig",
+    )
+
+
 def save_outputs(df, output_csv=OUTPUT_CSV, output_xlsx=OUTPUT_XLSX, raw_output_csv=RAW_OUTPUT_CSV):
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     for col in INTERNAL_COLUMNS:
@@ -1434,6 +1538,7 @@ def save_outputs(df, output_csv=OUTPUT_CSV, output_xlsx=OUTPUT_XLSX, raw_output_
     raw_df.to_csv(raw_output_csv, index=False, encoding="utf-8-sig")
     excel_df = to_excel_shape(raw_df)
     excel_df = apply_existing_manual_result_values(excel_df, output_csv)
+    sync_manual_inputs_from_excel(excel_df)
     excel_df.to_csv(output_csv, index=False, encoding="utf-8-sig")
     with pd.ExcelWriter(output_xlsx, engine="openpyxl") as writer:
         excel_df.to_excel(writer, index=False, sheet_name="IPO자동수집")
