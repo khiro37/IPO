@@ -48,7 +48,9 @@ WATCH_COLUMNS = [
     "수익금",
 ]
 WATCH_AMOUNT_COLUMNS = ["공모가", "시초가", "종가", "평균 매도가", "수익금"]
-MANUAL_INPUT_COLUMNS = ["_row_id", "평균 매도가", "수익금"]
+MANUAL_KEY_COLUMNS = ["종목", "상장일", "공모가", "증권사"]
+MANUAL_VALUE_COLUMNS = ["평균 매도가", "수익금"]
+MANUAL_INPUT_COLUMNS = ["_row_id", *MANUAL_KEY_COLUMNS, *MANUAL_VALUE_COLUMNS]
 WATCH_STATS_COLUMNS = [
     "번호",
     "구분",
@@ -358,8 +360,8 @@ def prepare_watch_display_table(table):
 
 
 def prepare_watch_editor_table(table):
-    editor_table = table[["_row_id", "종목", "상장일", "공모가", "평균 매도가", "수익금"]].copy()
-    for col in ["공모가", "평균 매도가", "수익금"]:
+    editor_table = table[MANUAL_INPUT_COLUMNS].copy()
+    for col in ["공모가", *MANUAL_VALUE_COLUMNS]:
         editor_table[col] = pd.to_numeric(editor_table[col].map(parse_number), errors="coerce")
     return editor_table
 
@@ -628,6 +630,8 @@ def load_manual_inputs():
     for col in MANUAL_INPUT_COLUMNS:
         if col not in manual.columns:
             manual[col] = ""
+    manual = manual[manual["_row_id"].fillna("").astype(str).str.strip().ne("")]
+    manual = manual.drop_duplicates("_row_id", keep="last")
     return manual[MANUAL_INPUT_COLUMNS]
 
 
@@ -636,12 +640,15 @@ def apply_manual_inputs(table):
     if manual.empty:
         return table
     merged = table.merge(manual, on="_row_id", how="left", suffixes=("", "_manual"))
-    for col in ["평균 매도가", "수익금"]:
+    for col in MANUAL_VALUE_COLUMNS:
         manual_col = f"{col}_manual"
         if manual_col in merged.columns:
             has_manual = merged[manual_col].fillna("").astype(str).str.strip() != ""
             merged.loc[has_manual, col] = merged.loc[has_manual, manual_col]
             merged = merged.drop(columns=[manual_col])
+    drop_cols = [f"{col}_manual" for col in MANUAL_KEY_COLUMNS if f"{col}_manual" in merged.columns]
+    if drop_cols:
+        merged = merged.drop(columns=drop_cols)
     return merged
 
 
@@ -655,7 +662,9 @@ def save_manual_inputs_from_editor(edited_table):
     )
     updates = updates[has_value]
     manual = pd.concat([manual, updates], ignore_index=True)
-    manual.to_csv(MANUAL_INPUT_FILE, index=False, encoding="utf-8-sig")
+    manual = manual[manual["_row_id"].fillna("").astype(str).str.strip().ne("")]
+    manual = manual.drop_duplicates("_row_id", keep="last")
+    manual[MANUAL_INPUT_COLUMNS].to_csv(MANUAL_INPUT_FILE, index=False, encoding="utf-8-sig")
     persist_manual_inputs_to_watch_file(updates)
     return persist_manual_inputs_to_github(MANUAL_INPUT_FILE)
 
@@ -736,12 +745,12 @@ def persist_manual_inputs_to_watch_file(updates):
     for col in MANUAL_INPUT_COLUMNS:
         if col not in updates.columns:
             updates[col] = ""
-    update_map = updates.set_index("_row_id")[["평균 매도가", "수익금"]].fillna("").astype(str).to_dict("index")
+    update_map = updates.set_index("_row_id")[MANUAL_VALUE_COLUMNS].fillna("").astype(str).to_dict("index")
     for idx, row in watch.iterrows():
         values = update_map.get(row["_row_id"])
         if not values:
             continue
-        for col in ["평균 매도가", "수익금"]:
+        for col in MANUAL_VALUE_COLUMNS:
             value = str(values.get(col, "")).strip()
             if value and value.lower() != "nan":
                 watch.at[idx, col] = value
@@ -1320,6 +1329,7 @@ with tab_watch:
                 disabled=["종목", "상장일", "공모가"],
                 column_config={
                     "_row_id": None,
+                    "증권사": None,
                     "공모가": st.column_config.NumberColumn("공모가", format="%,.0f"),
                     "평균 매도가": st.column_config.NumberColumn("평균 매도가", format="%,.0f"),
                     "수익금": st.column_config.NumberColumn("수익금", format="%,.0f"),

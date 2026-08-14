@@ -97,6 +97,7 @@ EXCEL_COLUMNS = [
 
 MANUAL_RESULT_COLUMNS = ["평균 매도가", "수익금"]
 RESULT_KEY_COLUMNS = ["종목", "상장일", "공모가", "증권사"]
+MANUAL_INPUT_COLUMNS = ["_row_id", *MANUAL_RESULT_COLUMNS, *RESULT_KEY_COLUMNS]
 
 
 class TextExtractor(HTMLParser):
@@ -1448,6 +1449,9 @@ def apply_existing_manual_result_values(excel_df, output_csv=OUTPUT_CSV):
         except Exception:
             manual_df = pd.DataFrame()
         if not manual_df.empty:
+            for col in MANUAL_INPUT_COLUMNS:
+                if col not in manual_df.columns:
+                    manual_df[col] = ""
             for _, row in manual_df.iterrows():
                 values = {
                     col: str(row.get(col, "")).strip()
@@ -1457,7 +1461,7 @@ def apply_existing_manual_result_values(excel_df, output_csv=OUTPUT_CSV):
                 row_id = str(row.get("_row_id", "")).strip()
                 if row_id and values:
                     manual_rows[row_id] = values
-                if all(col in manual_df.columns for col in RESULT_KEY_COLUMNS) and values:
+                if values:
                     manual_rows[result_row_key(row)] = values
     if not manual_rows:
         return excel_df
@@ -1515,14 +1519,15 @@ def sync_manual_inputs_from_excel(excel_df):
         old_manual = pd.DataFrame()
 
     combined = pd.concat([old_manual, new_manual], ignore_index=True).fillna("")
-    for col in ["_row_id", *MANUAL_RESULT_COLUMNS, *RESULT_KEY_COLUMNS]:
+    for col in MANUAL_INPUT_COLUMNS:
         if col not in combined.columns:
             combined[col] = ""
+    combined = combined[combined["_row_id"].fillna("").astype(str).str.strip().ne("")]
     combined = (
         combined.sort_values("_row_id")
         .drop_duplicates(subset=["_row_id"], keep="last")
     )
-    combined[["_row_id", *MANUAL_RESULT_COLUMNS, *RESULT_KEY_COLUMNS]].to_csv(
+    combined[MANUAL_INPUT_COLUMNS].to_csv(
         MANUAL_INPUT_CSV,
         index=False,
         encoding="utf-8-sig",
