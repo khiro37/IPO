@@ -683,8 +683,17 @@ def persist_manual_inputs_to_github(path):
         or app_secret("GITHUB_TOKEN")
         or app_secret("GH_TOKEN")
     )
-    if not token or not path.exists():
-        return False
+    if not path.exists():
+        return {"ok": False, "message": "수동 입력 파일을 찾지 못했습니다."}
+    if not token:
+        return {
+            "ok": False,
+            "message": (
+                "GitHub 저장 실패: Streamlit Secrets에 IPO_GITHUB_TOKEN이 없습니다. "
+                "GitHub Personal Access Token을 만들고 Streamlit Cloud의 App settings > Secrets에 "
+                'IPO_GITHUB_TOKEN = "토큰값" 형태로 추가해야 합니다.'
+            ),
+        }
 
     repo = app_secret("IPO_GITHUB_REPO", "khiro37/IPO")
     branch = app_secret("IPO_GITHUB_BRANCH", "main")
@@ -705,9 +714,9 @@ def persist_manual_inputs_to_github(path):
             sha = json.loads(response.read().decode("utf-8")).get("sha")
     except HTTPError as error:
         if error.code != 404:
-            return False
-    except Exception:
-        return False
+            return {"ok": False, "message": f"GitHub 파일 조회 실패: HTTP {error.code}"}
+    except Exception as error:
+        return {"ok": False, "message": f"GitHub 파일 조회 실패: {error}"}
 
     content = base64.b64encode(path.read_bytes()).decode("ascii")
     payload = {
@@ -725,9 +734,16 @@ def persist_manual_inputs_to_github(path):
             method="PUT",
         )
         with urlopen(put_request, timeout=20):
-            return True
-    except Exception:
-        return False
+            return {"ok": True, "message": "입력값을 저장하고 GitHub에도 반영했습니다."}
+    except HTTPError as error:
+        detail = ""
+        try:
+            detail = error.read().decode("utf-8")
+        except Exception:
+            detail = str(error)
+        return {"ok": False, "message": f"GitHub 저장 실패: HTTP {error.code} {detail}"}
+    except Exception as error:
+        return {"ok": False, "message": f"GitHub 저장 실패: {error}"}
 
 
 def persist_manual_inputs_to_watch_file(updates):
@@ -1338,9 +1354,12 @@ with tab_watch:
                 key="watch_manual_input_editor",
             )
             if st.button("평균 매도가/수익금 저장"):
-                github_saved = save_manual_inputs_from_editor(edited_watch_table)
-                if github_saved:
-                    st.success("입력값을 저장하고 GitHub에도 반영했습니다.")
+                save_status = save_manual_inputs_from_editor(edited_watch_table)
+                if save_status.get("ok"):
+                    st.success(save_status.get("message", "입력값을 저장하고 GitHub에도 반영했습니다."))
                 else:
-                    st.success("입력값을 로컬 파일에 저장했습니다. 배포 환경에서 영구 저장하려면 IPO_GITHUB_TOKEN secret을 설정하세요.")
+                    st.warning(
+                        "입력값은 현재 실행 중인 앱에는 저장했지만, GitHub 영구 저장은 실패했습니다.\n\n"
+                        + save_status.get("message", "원인을 알 수 없습니다.")
+                    )
                 st.rerun()
