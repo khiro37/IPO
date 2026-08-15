@@ -698,6 +698,7 @@ def persist_manual_inputs_to_github(path):
     repo = app_secret("IPO_GITHUB_REPO", "khiro37/IPO")
     branch = app_secret("IPO_GITHUB_BRANCH", "main")
     repo_path = app_secret("IPO_MANUAL_INPUT_PATH", GITHUB_MANUAL_INPUT_PATH)
+    target_label = f"{repo}/{repo_path} ({branch})"
     encoded_path = "/".join(quote(part) for part in repo_path.split("/"))
     api_url = f"https://api.github.com/repos/{repo}/contents/{encoded_path}"
     headers = {
@@ -714,9 +715,9 @@ def persist_manual_inputs_to_github(path):
             sha = json.loads(response.read().decode("utf-8")).get("sha")
     except HTTPError as error:
         if error.code != 404:
-            return {"ok": False, "message": f"GitHub 파일 조회 실패: HTTP {error.code}"}
+            return {"ok": False, "message": f"GitHub 파일 조회 실패: {target_label} HTTP {error.code}"}
     except Exception as error:
-        return {"ok": False, "message": f"GitHub 파일 조회 실패: {error}"}
+        return {"ok": False, "message": f"GitHub 파일 조회 실패: {target_label} {error}"}
 
     content = base64.b64encode(path.read_bytes()).decode("ascii")
     payload = {
@@ -734,16 +735,16 @@ def persist_manual_inputs_to_github(path):
             method="PUT",
         )
         with urlopen(put_request, timeout=20):
-            return {"ok": True, "message": "입력값을 저장하고 GitHub에도 반영했습니다."}
+            return {"ok": True, "message": f"입력값을 저장하고 GitHub에도 반영했습니다. 대상: {target_label}"}
     except HTTPError as error:
         detail = ""
         try:
             detail = error.read().decode("utf-8")
         except Exception:
             detail = str(error)
-        return {"ok": False, "message": f"GitHub 저장 실패: HTTP {error.code} {detail}"}
+        return {"ok": False, "message": f"GitHub 저장 실패: {target_label} HTTP {error.code} {detail}"}
     except Exception as error:
-        return {"ok": False, "message": f"GitHub 저장 실패: {error}"}
+        return {"ok": False, "message": f"GitHub 저장 실패: {target_label} {error}"}
 
 
 def persist_manual_inputs_to_watch_file(updates):
@@ -940,6 +941,12 @@ history = load_history()
 
 st.title("공모주 투자 대시보드 (By 워렌넝구)")
 st.caption("공모주 청약 지표와 상장 후 수익률을 한눈에 비교하는 투자 기록 대시보드입니다.")
+manual_save_status = st.session_state.pop("manual_save_status", None)
+if manual_save_status:
+    if manual_save_status.get("ok"):
+        st.success(manual_save_status.get("message", "입력값을 저장했습니다."))
+    else:
+        st.warning(manual_save_status.get("message", "입력값 저장 상태를 확인하지 못했습니다."))
 
 with st.sidebar:
     st.header("접속 모드")
@@ -1355,6 +1362,16 @@ with tab_watch:
             )
             if st.button("평균 매도가/수익금 저장"):
                 save_status = save_manual_inputs_from_editor(edited_watch_table)
+                if save_status.get("ok"):
+                    st.session_state["manual_save_status"] = save_status
+                else:
+                    st.session_state["manual_save_status"] = {
+                        "ok": False,
+                        "message": (
+                            "입력값은 현재 실행 중인 앱에는 저장했지만, GitHub 영구 저장은 실패했습니다.\n\n"
+                            + save_status.get("message", "원인을 알 수 없습니다.")
+                        ),
+                    }
                 if save_status.get("ok"):
                     st.success(save_status.get("message", "입력값을 저장하고 GitHub에도 반영했습니다."))
                 else:
