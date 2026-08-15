@@ -694,6 +694,26 @@ def persist_manual_inputs_to_github(path):
                 'IPO_GITHUB_TOKEN = "토큰값" 형태로 추가해야 합니다.'
             ),
         }
+    try:
+        token.encode("ascii")
+    except UnicodeEncodeError:
+        return {
+            "ok": False,
+            "message": (
+                "GitHub 저장 실패: IPO_GITHUB_TOKEN에 한글/공백 설명문이 들어가 있습니다. "
+                "Streamlit Secrets에는 실제 GitHub 토큰 문자열만 넣어야 합니다. "
+                '예: IPO_GITHUB_TOKEN = "github_pat_..." 또는 "ghp_..."'
+            ),
+        }
+    if not (token.startswith("ghp_") or token.startswith("github_pat_")):
+        return {
+            "ok": False,
+            "message": (
+                "GitHub 저장 실패: IPO_GITHUB_TOKEN이 GitHub 토큰 형식이 아닙니다. "
+                'Streamlit Secrets에 "네 GitHub Personal Access Token" 같은 설명문이 아니라 '
+                '실제 토큰값(ghp_... 또는 github_pat_...)을 넣어주세요.'
+            ),
+        }
 
     repo = app_secret("IPO_GITHUB_REPO", "khiro37/IPO")
     branch = app_secret("IPO_GITHUB_BRANCH", "main")
