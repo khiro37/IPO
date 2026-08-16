@@ -190,6 +190,14 @@ def parse_number(value):
     return pd.to_numeric(text, errors="coerce")
 
 
+def parse_percent_value(value):
+    number = parse_number(value)
+    if pd.isna(number):
+        return pd.NA
+    number = float(number)
+    return number / 100 if abs(number) > 1 else number
+
+
 def comma_number_string(value, digits=0):
     number = parse_number(value)
     if pd.isna(number):
@@ -548,6 +556,39 @@ def sort_watch_table(table):
     )
 
 
+def watch_table_to_history_frame(table):
+    source = table.copy().fillna("")
+    out = pd.DataFrame(index=source.index)
+    listed_dates = pd.to_datetime(column_or_blank(source, "상장일"), errors="coerce")
+    out["연도"] = pd.to_numeric(column_or_blank(source, "_연도"), errors="coerce")
+    out["연도"] = out["연도"].fillna(listed_dates.dt.year)
+    out["번호"] = pd.to_numeric(column_or_blank(source, "번호").map(parse_number), errors="coerce")
+    out["구분"] = "일반"
+    out["종목"] = column_or_blank(source, "종목").astype(str)
+    out["업종"] = column_or_blank(source, "업종").astype(str)
+    out.loc[is_spec_row(out["구분"], out["종목"]) | out["업종"].eq("스펙"), "구분"] = "스펙"
+    out["증권사"] = column_or_blank(source, "증권사").astype(str).str.strip().replace("", "미기재")
+    out["수요예측_경쟁률"] = column_or_blank(source, "수요예측\n경쟁률").map(parse_number)
+    out["일반청약_경쟁률"] = column_or_blank(source, "일반청약\n경쟁률").map(parse_number)
+    out["의무확약비율_전"] = column_or_blank(source, "의무확약비율(전)").map(parse_percent_value)
+    out["의무확약비율_후"] = column_or_blank(source, "의무확약비율(후)").map(parse_percent_value)
+    out["유통주식수_비율"] = column_or_blank(source, "유통주식수 비율").map(parse_percent_value)
+    out["유통주식_비율_후"] = column_or_blank(source, "유통주식 비율(후)").map(parse_percent_value)
+    out["시가총액_억원"] = column_or_blank(source, "시가총액").map(parse_number)
+    out["환매청구권"] = column_or_blank(source, "환매청구권").astype(str)
+    out["공모가"] = column_or_blank(source, "공모가").map(parse_number)
+    out["시초가"] = column_or_blank(source, "시초가").map(parse_number)
+    out["시초가_수익률"] = column_or_blank(source, "시초가 수익률").map(parse_percent_value)
+    out["첫날_종가"] = column_or_blank(source, "종가").map(parse_number)
+    out["종가_수익률"] = column_or_blank(source, "종가 수익률").map(parse_percent_value)
+    out["평균_매도가"] = column_or_blank(source, "평균 매도가").map(parse_number)
+    out["수익률"] = column_or_blank(source, "수익률").map(parse_percent_value)
+    out["수익금"] = column_or_blank(source, "수익금").map(parse_number)
+    has_avg = out["공모가"].notna() & out["평균_매도가"].notna() & out["공모가"].ne(0)
+    out.loc[has_avg, "수익률"] = (out.loc[has_avg, "평균_매도가"] - out.loc[has_avg, "공모가"]) / out.loc[has_avg, "공모가"]
+    return out
+
+
 def is_spec_row(type_series, name_series):
     text = type_series.fillna("").astype(str) + " " + name_series.fillna("").astype(str)
     return text.str.contains("스팩|스펙|spec|히어로", case=False, regex=True, na=False)
@@ -859,6 +900,19 @@ def load_history():
     df = apply_spec_normalization(df)
     if "업종" in df.columns:
         df["업종그룹"] = df["업종"].map(classify_industry_group)
+    if WATCH_FILE.exists():
+        try:
+            watch_df = pd.read_csv(WATCH_FILE)
+        except Exception:
+            watch_df = pd.DataFrame()
+        if not watch_df.empty:
+            merged_table = merge_watch_and_history(watch_df, df).fillna("")
+            merged_table = apply_manual_inputs(merged_table)
+            df = watch_table_to_history_frame(merged_table)
+            df = apply_spec_normalization(df)
+            if "업종" in df.columns:
+                df["업종"] = df["업종"].fillna("").astype(str).str.strip()
+                df["업종그룹"] = df["업종"].map(classify_industry_group)
     return df
 
 
