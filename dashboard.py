@@ -503,7 +503,7 @@ def watch_file_to_table(df):
     spec_mask = is_spec_row(raw_type, raw_name)
     table.loc[spec_mask, "업종"] = "스펙"
     listed_dates = pd.to_datetime(table["상장일"], errors="coerce")
-    table.insert(0, "_연도", listed_dates.dt.year)
+    table.insert(0, "_연도", listed_dates.dt.year.fillna(date.today().year))
     table.insert(
         1,
         "_row_id",
