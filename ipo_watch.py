@@ -691,12 +691,15 @@ def extract_final_lockup_ratio(text):
     section_end = context.find("Ⅲ.")
     if section_end > 0:
         context = context[:section_end]
-    uncommitted_rows = list(re.finditer(r"(미확약\s+.*?)(?:\s+(?:계|합계)\s+)", context))
-    total_rows = list(re.finditer(r"((?:계|합계)\s+.*?)(?:\s+Ⅲ\.|\s+주\d+\)|$)", context))
-    if not uncommitted_rows or not total_rows:
+    rows = re.search(
+        r"미확약\s+(.*?)\s+(?:계|합계)\s+(.*?)(?=\s+주1\))",
+        context,
+        re.DOTALL,
+    )
+    if not rows:
         return pd.NA, pd.NA, pd.NA, ""
-    uncommitted_line = compact_text(uncommitted_rows[-1].group(1))
-    total_line = compact_text(total_rows[-1].group(1))
+    uncommitted_line = compact_text(f"미확약 {rows.group(1)}")
+    total_line = compact_text(f"계 {rows.group(2)}")
     uncommitted = aggregate_quantity_from_row(uncommitted_line)
     total = aggregate_quantity_from_row(total_line)
     if pd.isna(total) or not total:
