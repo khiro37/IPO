@@ -1559,12 +1559,40 @@ def classify_ipo_type(company_name):
     return "일반"
 
 
+def stable_result_numbers(df, output_csv=OUTPUT_CSV):
+    existing_numbers = {}
+    next_number = 0
+    if output_csv.exists():
+        try:
+            old_df = pd.read_csv(output_csv, dtype=str).fillna("")
+        except Exception:
+            old_df = pd.DataFrame()
+        if {"종목", "번호"}.issubset(old_df.columns):
+            for _, row in old_df.iterrows():
+                company = normalize_name(row.get("종목", ""))
+                number = safe_float(row.get("번호", pd.NA))
+                if company and pd.notna(number):
+                    existing_numbers[company] = int(number)
+                    next_number = max(next_number, int(number))
+
+    numbers = []
+    for company in df["회사"]:
+        company_key = normalize_name(company)
+        number = existing_numbers.get(company_key)
+        if number is None:
+            next_number += 1
+            number = next_number
+            existing_numbers[company_key] = number
+        numbers.append(number)
+    return numbers
+
+
 def to_excel_shape(df):
     for col in INTERNAL_COLUMNS:
         if col not in df.columns:
             df[col] = ""
     shaped = pd.DataFrame()
-    shaped["번호"] = range(1, len(df) + 1)
+    shaped["번호"] = stable_result_numbers(df)
     shaped["구분"] = df["회사"].map(classify_ipo_type)
     shaped["종목"] = df["회사"]
     shaped["업종"] = df["업종"]

@@ -531,13 +531,38 @@ def merge_watch_and_history(watch_df, history_df):
         .set_index("종목")["번호"]
         .to_dict()
     )
-    watch_table["번호"] = watch_table.apply(
-        lambda row: history_number_by_name.get(row["종목"], row["번호"]),
-        axis=1,
-    )
+    next_number_by_year = {}
+    for _, row in history_table.iterrows():
+        year = parse_number(row.get("_연도"))
+        number = parse_number(row.get("번호"))
+        if pd.isna(year) or pd.isna(number):
+            continue
+        year = int(year)
+        next_number_by_year[year] = max(next_number_by_year.get(year, 0), int(number))
+
+    watch_order = watch_table.assign(
+        _watch_number=watch_table["번호"].map(parse_number)
+    ).sort_values(["_연도", "_watch_number"], na_position="last")
+    assigned_numbers = {}
+    for index, row in watch_order.iterrows():
+        company = row["종목"]
+        if company in history_number_by_name:
+            assigned_numbers[index] = history_number_by_name[company]
+            continue
+        year = parse_number(row.get("_연도"))
+        year = int(year) if pd.notna(year) else date.today().year
+        next_number_by_year[year] = next_number_by_year.get(year, 0) + 1
+        assigned_numbers[index] = next_number_by_year[year]
+    watch_table["번호"] = watch_table.index.map(assigned_numbers)
     duplicate_names = set(watch_table["종목"].dropna().astype(str))
     history_table = history_table[~history_table["종목"].astype(str).isin(duplicate_names)]
-    return pd.concat([watch_table, history_table], ignore_index=True)
+    combined = pd.concat([watch_table, history_table], ignore_index=True)
+    for _, year_rows in combined.groupby("_연도", dropna=False):
+        ordered_indexes = year_rows.assign(
+            _number_order=year_rows["번호"].map(parse_number)
+        ).sort_values("_number_order", na_position="last").index
+        combined.loc[ordered_indexes, "번호"] = range(1, len(ordered_indexes) + 1)
+    return combined
 
 
 def sort_watch_table(table):
