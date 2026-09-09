@@ -33,6 +33,7 @@ INTERNAL_COLUMNS = [
     "개인청약_시작일",
     "상장일",
     "네이버_일정열",
+    "네이버_종목코드",
     "DART회사명",
     "공시일",
     "공시명",
@@ -336,6 +337,10 @@ def clean_naver_company_name(value):
     return compact_text(text)
 
 
+def is_spac_company(value):
+    return bool(re.search(r"스팩|스펙|spec|spac", str(value), re.IGNORECASE))
+
+
 NAVER_INFO_LABELS = [
     "공모가",
     "업종",
@@ -399,6 +404,11 @@ def parse_naver_competition(value):
     return parse_money_number(match.group(1)) if match else pd.NA
 
 
+def parse_naver_offer_price(value):
+    match = re.search(r"([\d,]+)", str(value))
+    return parse_money_number(match.group(1)) if match else pd.NA
+
+
 def parse_naver_ipo_row(row, run_date):
     raw_company = row.get("종목", "") or row.get("회사", "")
     info = compact_text(f"{row.get('종목', '')} {row.get('투자정보', '')}")
@@ -412,6 +422,7 @@ def parse_naver_ipo_row(row, run_date):
         "개인청약_시작일": subscription_start.isoformat() if subscription_start else "",
         "개인청약_종료일": subscription_end.isoformat() if subscription_end else "",
         "상장일": listing_date.isoformat() if listing_date else "",
+        "네이버_공모가": parse_naver_offer_price(extract_naver_field(info, "공모가")),
         "일반청약_경쟁률": parse_naver_competition(extract_naver_field(info, "개인청약경쟁률")),
         "네이버_원자료": " | ".join(f"{k}: {v}" for k, v in row.items() if v and v != "nan"),
     }
@@ -432,6 +443,20 @@ def flatten_naver_ipo_tables(tables):
                 continue
             rows.append(item)
     return rows
+
+
+def naver_ipo_stock_code_lookup(html):
+    lookup = {}
+    pattern = re.compile(
+        r'<div\s+class="item_area"\s+id="A([A-Za-z0-9]{6})".*?'
+        r'<h4\s+class="item_name".*?<a\s+[^>]*>(.*?)</a>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    for stock_code, company_html in pattern.findall(html):
+        company = compact_text(re.sub(r"<[^>]+>", " ", company_html))
+        if company:
+            lookup[normalize_name(company)] = stock_code
+    return lookup
 
 
 def find_key_by_keywords(row, keywords):
@@ -473,12 +498,14 @@ def naver_ipo_candidates(run_date):
     html = decode_bytes(fetch_url(NAVER_IPO_URL))
     tables = pd.read_html(io.StringIO(html))
     rows = flatten_naver_ipo_tables(tables)
+    stock_codes = naver_ipo_stock_code_lookup(html)
     target_date = run_date + timedelta(days=1)
     candidates = []
     for row in rows:
         parsed = parse_naver_ipo_row(row, run_date)
         if not parsed["회사"]:
             continue
+        parsed["네이버_종목코드"] = stock_codes.get(normalize_name(parsed["회사"]), "")
         subscription_start = datetime.strptime(parsed["개인청약_시작일"], "%Y-%m-%d").date() if parsed["개인청약_시작일"] else None
         subscription_end = datetime.strptime(parsed["개인청약_종료일"], "%Y-%m-%d").date() if parsed["개인청약_종료일"] else None
         is_starting_tomorrow = subscription_start == target_date
@@ -497,12 +524,54 @@ def naver_ipo_candidates(run_date):
 def naver_ipo_lookup(run_date):
     html = decode_bytes(fetch_url(NAVER_IPO_URL))
     tables = pd.read_html(io.StringIO(html))
+    stock_codes = naver_ipo_stock_code_lookup(html)
     lookup = {}
     for row in flatten_naver_ipo_tables(tables):
         parsed = parse_naver_ipo_row(row, run_date)
         if parsed["회사"]:
+            parsed["네이버_종목코드"] = stock_codes.get(normalize_name(parsed["회사"]), "")
             lookup[normalize_name(parsed["회사"])] = parsed
     return lookup
+
+
+def update_existing_naver_fields(df, run_date):
+    if df.empty:
+        return df
+
+    lookup = naver_ipo_lookup(run_date)
+    rows = []
+    for source_row in df.to_dict("records"):
+        row = dict(source_row)
+        naver_info = lookup.get(normalize_name(row.get("회사", "")), {})
+        if not naver_info:
+            rows.append(row)
+            continue
+
+        for target, source in [
+            ("업종", "업종"),
+            ("증권사", "증권사"),
+            ("개인청약_시작일", "개인청약_시작일"),
+            ("상장일", "상장일"),
+            ("일반청약_경쟁률", "일반청약_경쟁률"),
+            ("네이버_종목코드", "네이버_종목코드"),
+            ("네이버_원자료", "네이버_원자료"),
+        ]:
+            value = naver_info.get(source, pd.NA)
+            if has_value(value):
+                row[target] = value
+
+        if is_spac_company(row.get("회사")):
+            offer_price = naver_info.get("네이버_공모가", pd.NA)
+            if has_value(offer_price):
+                row["공모가"] = offer_price
+                row["공모가_근거"] = "네이버 금융 IPO 일정"
+        rows.append(row)
+
+    updated = pd.DataFrame(rows)
+    for col in INTERNAL_COLUMNS:
+        if col not in updated.columns:
+            updated[col] = ""
+    return updated[INTERNAL_COLUMNS]
 
 
 def search_investment_prospectus(api_key, corp_code, start_date, end_date):
@@ -742,15 +811,21 @@ def update_existing_listing_prices(df, run_date, refresh_corp_codes=False):
             rows.append(row)
             continue
         company_name = row.get("DART회사명") or row.get("회사")
-        corp_code, dart_name = resolve_corp(corp_codes, company_name)
-        stock_code = stock_code_for_corp(corp_codes, corp_code)
-        if not stock_code and not refreshed_corp_codes:
-            corp_codes = load_corp_codes(api_key, refresh=True)
-            refreshed_corp_codes = True
+        dart_name = ""
+        if is_spac_company(row.get("회사") or company_name):
+            stock_code = compact_text(row.get("네이버_종목코드", ""))
+            if not stock_code:
+                stock_code = fetch_naver_stock_code_by_name(row.get("회사") or company_name)
+        else:
             corp_code, dart_name = resolve_corp(corp_codes, company_name)
             stock_code = stock_code_for_corp(corp_codes, corp_code)
-        if not stock_code:
-            stock_code = fetch_naver_stock_code_by_name(row.get("회사") or company_name)
+            if not stock_code and not refreshed_corp_codes:
+                corp_codes = load_corp_codes(api_key, refresh=True)
+                refreshed_corp_codes = True
+                corp_code, dart_name = resolve_corp(corp_codes, company_name)
+                stock_code = stock_code_for_corp(corp_codes, corp_code)
+            if not stock_code:
+                stock_code = fetch_naver_stock_code_by_name(row.get("회사") or company_name)
 
         if not stock_code:
             row["오류"] = compact_text(
@@ -788,6 +863,9 @@ def update_existing_issuance_reports(df, run_date, refresh_corp_codes=False):
 
     for source_row in df.to_dict("records"):
         row = dict(source_row)
+        if is_spac_company(row.get("회사")):
+            rows.append(row)
+            continue
         if has_value(row.get("발행실적_접수번호")) and has_value(row.get("의무확약비율_후")):
             rows.append(row)
             continue
@@ -817,6 +895,73 @@ def update_existing_issuance_reports(df, run_date, refresh_corp_codes=False):
                 row["DART회사명"] = dart_name
         except Exception as error:
             row["오류"] = compact_text(f"{row.get('오류', '')} / 증권발행실적보고서 조회 실패: {error}").strip(" /")
+        rows.append(row)
+
+    updated = pd.DataFrame(rows)
+    for col in INTERNAL_COLUMNS:
+        if col not in updated.columns:
+            updated[col] = ""
+    return updated[INTERNAL_COLUMNS]
+
+
+def update_existing_prospectuses(df, run_date, refresh_corp_codes=False):
+    if df.empty:
+        return df
+
+    api_key = load_dart_api_key()
+    if not api_key:
+        raise RuntimeError("DART API 키가 없습니다. DART_API_KEY 환경변수를 설정하세요.")
+
+    corp_codes = load_corp_codes(api_key, refresh=refresh_corp_codes)
+    refreshed_corp_codes = False
+    rows = []
+    for source_row in df.to_dict("records"):
+        row = dict(source_row)
+        if is_spac_company(row.get("회사")):
+            rows.append(row)
+            continue
+
+        listing_date = parse_short_date(row.get("상장일", ""), run_date.year)
+        subscription_date = parse_short_date(row.get("개인청약_시작일", ""), run_date.year)
+        if listing_date and run_date > listing_date + timedelta(days=7):
+            rows.append(row)
+            continue
+        if not listing_date and subscription_date and run_date > subscription_date + timedelta(days=30):
+            rows.append(row)
+            continue
+
+        company_name = row.get("DART회사명") or row.get("회사")
+        corp_code, dart_name = resolve_corp(corp_codes, company_name)
+        if not corp_code and not refreshed_corp_codes:
+            corp_codes = load_corp_codes(api_key, refresh=True)
+            refreshed_corp_codes = True
+            corp_code, dart_name = resolve_corp(corp_codes, company_name)
+        if not corp_code:
+            row["오류"] = compact_text(
+                f"{row.get('오류', '')} / 투자설명서 갱신용 corp_code를 찾지 못했습니다."
+            ).strip(" /")
+            rows.append(row)
+            continue
+
+        try:
+            filings = search_investment_prospectus(
+                api_key,
+                corp_code,
+                run_date - timedelta(days=365),
+                run_date,
+            )
+            if filings:
+                filing = filings[0]
+                row.update(filing)
+                text = download_document_text(api_key, filing["접수번호"])
+                metrics = parse_prospectus_metrics(text)
+                if not is_valid_underwriter(metrics.get("증권사")) and row.get("증권사"):
+                    metrics["증권사"] = row["증권사"]
+                row.update(metrics)
+                if dart_name:
+                    row["DART회사명"] = dart_name
+        except Exception as error:
+            row["오류"] = compact_text(f"{row.get('오류', '')} / 투자설명서 갱신 실패: {error}").strip(" /")
         rows.append(row)
 
     updated = pd.DataFrame(rows)
@@ -1216,12 +1361,16 @@ def parse_prospectus_metrics(text):
 
 
 def collect_ipo_watch(run_date, refresh_corp_codes=False):
-    api_key = load_dart_api_key()
-    if not api_key:
-        raise RuntimeError("DART API 키가 없습니다. DART_API_KEY 환경변수를 설정하세요.")
-
     candidates = naver_ipo_candidates(run_date)
-    corp_codes = load_corp_codes(api_key, refresh=refresh_corp_codes)
+    general_candidates = [candidate for candidate in candidates if not is_spac_company(candidate["회사"])]
+    api_key = load_dart_api_key() if general_candidates else ""
+    if general_candidates and not api_key:
+        raise RuntimeError("DART API 키가 없습니다. DART_API_KEY 환경변수를 설정하세요.")
+    corp_codes = (
+        load_corp_codes(api_key, refresh=refresh_corp_codes)
+        if general_candidates
+        else pd.DataFrame(columns=["corp_code", "corp_name", "stock_code"])
+    )
     rows = []
     for candidate in candidates:
         row = {
@@ -1234,6 +1383,13 @@ def collect_ipo_watch(run_date, refresh_corp_codes=False):
             "DART_URL": "",
             "오류": "",
         }
+        if is_spac_company(candidate["회사"]):
+            row["공모가"] = candidate.get("네이버_공모가", pd.NA)
+            row["공모가_근거"] = "네이버 금융 IPO 일정"
+            if not has_value(row["공모가"]):
+                row["오류"] = "네이버 금융에서 공모가를 찾지 못했습니다."
+            rows.append(row)
+            continue
         try:
             corp_code, dart_name = resolve_corp(corp_codes, candidate["회사"])
             row["DART회사명"] = dart_name
@@ -1265,12 +1421,16 @@ def collect_ipo_watch(run_date, refresh_corp_codes=False):
 
 
 def collect_company_prospectuses(company_names, run_date, search_start, search_end, refresh_corp_codes=False):
-    api_key = load_dart_api_key()
-    if not api_key:
-        raise RuntimeError("DART API 키가 없습니다. DART_API_KEY 환경변수를 설정하세요.")
-
-    corp_codes = load_corp_codes(api_key, refresh=refresh_corp_codes)
     naver_lookup = naver_ipo_lookup(run_date)
+    general_companies = [company for company in company_names if not is_spac_company(company)]
+    api_key = load_dart_api_key() if general_companies else ""
+    if general_companies and not api_key:
+        raise RuntimeError("DART API 키가 없습니다. DART_API_KEY 환경변수를 설정하세요.")
+    corp_codes = (
+        load_corp_codes(api_key, refresh=refresh_corp_codes)
+        if general_companies
+        else pd.DataFrame(columns=["corp_code", "corp_name", "stock_code"])
+    )
     rows = []
     for company_name in company_names:
         company_name = compact_text(company_name)
@@ -1282,6 +1442,7 @@ def collect_company_prospectuses(company_names, run_date, search_start, search_e
             "개인청약_시작일": naver_info.get("개인청약_시작일", ""),
             "상장일": naver_info.get("상장일", ""),
             "네이버_일정열": "회사명 직접입력",
+            "네이버_종목코드": naver_info.get("네이버_종목코드", ""),
             "네이버_원자료": naver_info.get("네이버_원자료", ""),
             "증권사": naver_info.get("증권사", ""),
             "일반청약_경쟁률": naver_info.get("일반청약_경쟁률", pd.NA),
@@ -1292,6 +1453,13 @@ def collect_company_prospectuses(company_names, run_date, search_start, search_e
             "DART_URL": "",
             "오류": "",
         }
+        if is_spac_company(company_name):
+            row["공모가"] = naver_info.get("네이버_공모가", pd.NA)
+            row["공모가_근거"] = "네이버 금융 IPO 일정"
+            if not has_value(row["공모가"]):
+                row["오류"] = "네이버 금융에서 공모가를 찾지 못했습니다."
+            rows.append(row)
+            continue
         try:
             corp_code, dart_name = resolve_corp(corp_codes, company_name)
             row["DART회사명"] = dart_name
@@ -1372,8 +1540,7 @@ def format_market_cap(value):
 
 
 def classify_ipo_type(company_name):
-    normalized = str(company_name).lower()
-    if re.search(r"스팩|스펙|spec|spac", normalized):
+    if is_spac_company(company_name):
         return "스펙"
     return "일반"
 
@@ -1410,7 +1577,9 @@ def to_excel_shape(df):
 
 
 def normalize_key_value(value):
-    text = str(value or "").strip()
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
     if text.endswith(".0"):
         text = text[:-2]
     return text.replace(",", "")
@@ -1577,6 +1746,8 @@ def main():
     else:
         result = collect_ipo_watch(run_date, refresh_corp_codes=args.refresh_corp_codes)
     output = result if args.no_merge else merge_with_existing(result, RAW_OUTPUT_CSV)
+    output = update_existing_naver_fields(output, run_date)
+    output = update_existing_prospectuses(output, run_date, refresh_corp_codes=args.refresh_corp_codes)
     output = update_existing_issuance_reports(output, run_date, refresh_corp_codes=args.refresh_corp_codes)
     output = update_existing_listing_prices(output, run_date, refresh_corp_codes=args.refresh_corp_codes)
 
