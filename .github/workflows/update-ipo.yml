@@ -5,6 +5,8 @@ on:
   schedule:
     # KST 월~토 08:00 = UTC 일~금 23:00
     - cron: "0 23 * * 0-5"
+    # 청약 전날 늦게 공시된 수요예측 결과를 반영: KST 월~금 20:00
+    - cron: "0 11 * * 1-5"
 
 permissions:
   contents: write

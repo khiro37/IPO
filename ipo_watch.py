@@ -960,7 +960,13 @@ def update_existing_prospectuses(df, run_date, refresh_corp_codes=False):
                 metrics = parse_prospectus_metrics(text)
                 if not is_valid_underwriter(metrics.get("증권사")) and row.get("증권사"):
                     metrics["증권사"] = row["증권사"]
-                row.update(metrics)
+                for key, value in metrics.items():
+                    if has_value(value):
+                        row[key] = value
+                existing_lockup_total = safe_float(row.get("의무보유확약_계", pd.NA))
+                if pd.notna(existing_lockup_total) and existing_lockup_total < 1_000:
+                    for key in ["의무확약비율_전", "의무보유확약_계", "의무보유확약_미확약", "의무확약_근거"]:
+                        row[key] = pd.NA
                 if dart_name:
                     row["DART회사명"] = dart_name
         except Exception as error:
@@ -1155,10 +1161,15 @@ def extract_lockup_ratio(text):
         value, source = extract_first([r"(?:계|합계).{0,500}?([\d,]+)\s*(?:주|건|%)"], context)
         total = parse_money_number(value)
 
-    ratio = pd.NA
-    if pd.notna(total) and total:
-        uncommitted_value = float(uncommitted) if pd.notna(uncommitted) else 0.0
-        ratio = (float(total) - uncommitted_value) / float(total)
+    if (
+        pd.isna(total)
+        or pd.isna(uncommitted)
+        or float(total) < 1_000
+        or float(uncommitted) < 0
+        or float(uncommitted) > float(total)
+    ):
+        return pd.NA, pd.NA, pd.NA, compact_text(f"{source} / {source2}")
+    ratio = (float(total) - float(uncommitted)) / float(total)
     return ratio, total, uncommitted, compact_text(f"{source} / {source2}")
 
 
