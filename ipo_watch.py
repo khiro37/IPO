@@ -1,5 +1,6 @@
 import argparse
 import io
+import json
 import os
 import re
 import time
@@ -23,7 +24,7 @@ RAW_OUTPUT_CSV = BASE_DIR / "ipo_watch_raw.csv"
 MANUAL_INPUT_CSV = BASE_DIR / "ipo_manual_inputs.csv"
 CORP_CODE_CACHE = BASE_DIR / "corp_codes.csv"
 
-NAVER_IPO_URL = "https://finance.naver.com/sise/ipo.naver"
+NAVER_IPO_API_URL = "https://stock.naver.com/api/domestic/market/ipo/progress"
 DART_API_BASE = "https://opendart.fss.or.kr/api"
 DART_VIEWER_BASE = "https://dart.fss.or.kr/dsaf001/main.do?rcpNo="
 INTERNAL_COLUMNS = [
@@ -459,6 +460,59 @@ def naver_ipo_stock_code_lookup(html):
     return lookup
 
 
+NAVER_IPO_LIST_KEYS = [
+    "examinationList",
+    "demandForecastingList",
+    "forecastingCompleteList",
+    "subscriptionList",
+    "subscriptionCompleteList",
+    "listingList",
+]
+
+
+def parse_naver_ipo_api_item(item):
+    def api_text(key):
+        value = item.get(key)
+        return compact_text(value) if value is not None else ""
+
+    ipo_code = api_text("ipoCode")
+    if ipo_code.startswith("A") and len(ipo_code) == 7:
+        ipo_code = ipo_code[1:]
+
+    offer_price = item.get("fixPubPrice")
+    competition = item.get("fnlCmptRatio")
+    return {
+        "회사": api_text("compName"),
+        "업종": api_text("compUpjong"),
+        "증권사": api_text("orgNm"),
+        "개인청약_시작일": api_text("poStartDate"),
+        "개인청약_종료일": api_text("poEndDate"),
+        "상장일": api_text("lcalDate"),
+        "네이버_공모가": parse_money_number(offer_price) if has_value(offer_price) else pd.NA,
+        "일반청약_경쟁률": parse_money_number(competition) if has_value(competition) else pd.NA,
+        "네이버_종목코드": ipo_code,
+        "네이버_원자료": json.dumps(item, ensure_ascii=False, separators=(",", ":")),
+    }
+
+
+def naver_ipo_api_rows(include_listed=False):
+    requests = [{"startIdx": 0, "pageSize": 101}]
+    if include_listed:
+        requests.append({"IpoProgressType": "LISTING", "startIdx": 0, "pageSize": 100})
+
+    rows = {}
+    for params in requests:
+        payload = json.loads(decode_bytes(fetch_url(NAVER_IPO_API_URL, params)))
+        if not isinstance(payload, dict):
+            raise ValueError("Unexpected Naver IPO API response")
+        for key in NAVER_IPO_LIST_KEYS:
+            for item in payload.get(key) or []:
+                parsed = parse_naver_ipo_api_item(item)
+                if parsed["회사"]:
+                    rows[normalize_name(parsed["회사"])] = parsed
+    return list(rows.values())
+
+
 def find_key_by_keywords(row, keywords):
     for key in row.keys():
         key_norm = re.sub(r"\s+", "", key)
@@ -495,17 +549,13 @@ def find_subscription_start(row, run_date):
 
 
 def naver_ipo_candidates(run_date):
-    html = decode_bytes(fetch_url(NAVER_IPO_URL))
-    tables = pd.read_html(io.StringIO(html))
-    rows = flatten_naver_ipo_tables(tables)
-    stock_codes = naver_ipo_stock_code_lookup(html)
+    rows = naver_ipo_api_rows()
     target_date = run_date + timedelta(days=1)
     candidates = []
     for row in rows:
-        parsed = parse_naver_ipo_row(row, run_date)
+        parsed = dict(row)
         if not parsed["회사"]:
             continue
-        parsed["네이버_종목코드"] = stock_codes.get(normalize_name(parsed["회사"]), "")
         subscription_start = datetime.strptime(parsed["개인청약_시작일"], "%Y-%m-%d").date() if parsed["개인청약_시작일"] else None
         subscription_end = datetime.strptime(parsed["개인청약_종료일"], "%Y-%m-%d").date() if parsed["개인청약_종료일"] else None
         is_starting_tomorrow = subscription_start == target_date
@@ -522,14 +572,9 @@ def naver_ipo_candidates(run_date):
 
 
 def naver_ipo_lookup(run_date):
-    html = decode_bytes(fetch_url(NAVER_IPO_URL))
-    tables = pd.read_html(io.StringIO(html))
-    stock_codes = naver_ipo_stock_code_lookup(html)
     lookup = {}
-    for row in flatten_naver_ipo_tables(tables):
-        parsed = parse_naver_ipo_row(row, run_date)
+    for parsed in naver_ipo_api_rows(include_listed=True):
         if parsed["회사"]:
-            parsed["네이버_종목코드"] = stock_codes.get(normalize_name(parsed["회사"]), "")
             lookup[normalize_name(parsed["회사"])] = parsed
     return lookup
 
