@@ -1188,6 +1188,20 @@ def extract_market_cap(text, offer_price):
             amount = amount / 100
         return amount, source
 
+    strict_share_matches = list(
+        re.finditer(
+            r"(?:당사의\s+)?(?:보통주\s+)?상장\s*예정\s*주식\s*수는\s*"
+            r"([\d,]+)\s*주",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    if strict_share_matches and pd.notna(offer_price):
+        match = strict_share_matches[-1]
+        shares = parse_money_number(match.group(1))
+        source = compact_text(text[max(0, match.start() - 120): match.end() + 180])
+        return float(shares) * float(offer_price) / 100_000_000, f"{source} * 주당공모가액"
+
     shares, shares_source = extract_first(
         [
             r"총\s*상장\s*예정\s*(?:주식|증권)\s*수(?:는|는\s*총)?\s*([\d,]+)\s*(?:주|DR)",
