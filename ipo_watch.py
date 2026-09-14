@@ -1279,6 +1279,29 @@ def extract_market_cap(text, offer_price):
 def extract_float_shares(text):
     context = find_context(text, ["유통가능", "상장직후 유통", "상장 후 유통"], 7000)
     source_text = context or text
+
+    # Some prospectuses state the ratio before the share count. Match that
+    # sentence first so a later controlling-shareholder lockup ratio is not used.
+    ratio_first_row = re.search(
+        r"상장\s*예정\s*(?:주식|증권)\s*수\s*[\d,]+\s*(?:주|DR)?\s*중\s*"
+        r"([\d.]+)\s*%\s*에\s*해당하는\s*([\d,]+)\s*(?:주|DR)(?:는|은)?"
+        r".{0,100}?상장\s*(?:직후|일)\s*유통가능",
+        source_text,
+        re.IGNORECASE,
+    )
+    if not ratio_first_row and source_text != text:
+        source_text = compact_text(text)
+        ratio_first_row = re.search(
+            r"상장\s*예정\s*(?:주식|증권)\s*수\s*[\d,]+\s*(?:주|DR)?\s*중\s*"
+            r"([\d.]+)\s*%\s*에\s*해당하는\s*([\d,]+)\s*(?:주|DR)(?:는|은)?"
+            r".{0,100}?상장\s*(?:직후|일)\s*유통가능",
+            source_text,
+            re.IGNORECASE,
+        )
+    if ratio_first_row:
+        source = compact_text(source_text[max(0, ratio_first_row.start() - 120): ratio_first_row.end() + 180])
+        return parse_money_number(ratio_first_row.group(2)), parse_money_number(ratio_first_row.group(1)), source
+
     listing_day_source = source_text
     listing_day_row = re.search(
         r"(?:상장일|상장\s*직후|상장직후)\s*유통가능\s*([\d,]+)\s*(?:주|DR)?\s*([\d.]+)\s*%",
@@ -1302,7 +1325,7 @@ def extract_float_shares(text):
     )
     if not special_sentence:
         special_sentence = re.search(
-            r"유통가능.{0,220}?([\d,]+)\s*(?:주|DR)\s*\(\s*공모\s*후\s*기준\s*([\d.]+)\s*%\s*\)",
+            r"유통가능[^.!?\n]{0,220}?([\d,]+)\s*(?:주|DR)\s*\(\s*공모\s*후\s*기준\s*([\d.]+)\s*%\s*\)",
             source_text,
         )
     if not special_sentence and source_text != text:
@@ -1313,7 +1336,7 @@ def extract_float_shares(text):
         )
         if not special_sentence:
             special_sentence = re.search(
-                r"유통가능.{0,220}?([\d,]+)\s*(?:주|DR)\s*\(\s*공모\s*후\s*기준\s*([\d.]+)\s*%\s*\)",
+                r"유통가능[^.!?\n]{0,220}?([\d,]+)\s*(?:주|DR)\s*\(\s*공모\s*후\s*기준\s*([\d.]+)\s*%\s*\)",
                 source_text,
             )
     if special_sentence:
