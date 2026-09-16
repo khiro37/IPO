@@ -971,7 +971,7 @@ def update_existing_prospectuses(df, run_date, refresh_corp_codes=False):
 
         listing_date = parse_short_date(row.get("상장일", ""), run_date.year)
         subscription_date = parse_short_date(row.get("개인청약_시작일", ""), run_date.year)
-        if listing_date and run_date > listing_date + timedelta(days=7):
+        if listing_date and run_date > listing_date + timedelta(days=45):
             rows.append(row)
             continue
         if not listing_date and subscription_date and run_date > subscription_date + timedelta(days=30):
@@ -1003,7 +1003,19 @@ def update_existing_prospectuses(df, run_date, refresh_corp_codes=False):
                 row.update(filing)
                 text = download_document_text(api_key, filing["접수번호"])
                 metrics = parse_prospectus_metrics(text)
-                if not is_valid_underwriter(metrics.get("증권사")) and row.get("증권사"):
+                existing_underwriters = [
+                    name.strip()
+                    for name in re.split(r"[,/]", str(row.get("증권사", "")))
+                    if is_valid_underwriter(name)
+                ]
+                parsed_underwriters = [
+                    name.strip()
+                    for name in re.split(r"[,/]", str(metrics.get("증권사", "")))
+                    if is_valid_underwriter(name)
+                ]
+                if existing_underwriters and len(existing_underwriters) > len(parsed_underwriters):
+                    metrics["증권사"] = row["증권사"]
+                elif not parsed_underwriters and row.get("증권사"):
                     metrics["증권사"] = row["증권사"]
                 for key, value in metrics.items():
                     if has_value(value):
@@ -1218,106 +1230,103 @@ def extract_lockup_ratio(text):
     return ratio, total, uncommitted, compact_text(f"{source} / {source2}")
 
 
-def extract_market_cap(text, offer_price):
-    context = find_context(text, ["시가총액", "상장예정주식수", "상장 예정주식수"], 4500)
-    value, source = extract_first(
-        [
-            r"시가\s*총액.{0,160}?([\d,]+(?:\.\d+)?)\s*억원",
-            r"시가\s*총액.{0,160}?([\d,]+(?:\.\d+)?)\s*백만원",
-        ],
-        context or text,
+def extract_market_cap(text, offer_price, float_shares=pd.NA, float_ratio=pd.NA):
+    offer_price = safe_float(offer_price)
+    if pd.isna(offer_price):
+        return pd.NA, ""
+
+    flat_text = compact_text(text)
+    share_patterns = [
+        r"(?:총\s*)?상장\s*예정\s*(?:주식|증권)\s*(?:총\s*)?수"
+        r"(?:\s*\([^)]{0,60}\))?\s*(?:는|은|가|인)?\s*(?:총\s*)?"
+        r"([\d,]+)\s*(?:주|DR)",
+        r"공모\s*후\s*주식수\s*(?:\([A-Z]\))?\s*(?:는|은)?\s*"
+        r"([\d,]+)\s*(?:주|DR)",
+    ]
+    candidates = {}
+    for pattern in share_patterns:
+        for match in re.finditer(pattern, flat_text, re.IGNORECASE):
+            shares = parse_money_number(match.group(1))
+            if pd.isna(shares) or float(shares) < 10_000:
+                continue
+            candidates.setdefault(float(shares), []).append(match)
+
+    parsed_float_shares = safe_float(float_shares)
+    parsed_float_ratio = safe_float(float_ratio)
+    if pd.notna(parsed_float_shares):
+        candidates = {
+            shares: matches
+            for shares, matches in candidates.items()
+            if shares >= float(parsed_float_shares)
+        }
+
+    if candidates:
+        expected_total = None
+        if (
+            pd.notna(parsed_float_shares)
+            and pd.notna(parsed_float_ratio)
+            and 0 < float(parsed_float_ratio) <= 100
+        ):
+            expected_total = float(parsed_float_shares) * 100 / float(parsed_float_ratio)
+
+        def candidate_score(item):
+            shares, matches = item
+            ratio_error = abs(shares - expected_total) / expected_total if expected_total else 0
+            return ratio_error, -len(matches), matches[0].start()
+
+        shares, matches = min(candidates.items(), key=candidate_score)
+        match = matches[0]
+        source = compact_text(flat_text[max(0, match.start() - 120): match.end() + 180])
+        return shares * float(offer_price) / 100_000_000, f"{source} * 주당공모가액"
+
+    explicit_match = re.search(
+        r"(?:상장\s*(?:후|예정)\s*시가\s*총액|"
+        r"(?:확정\s*)?공모가(?:액)?\s*기준\s*시가\s*총액)"
+        r"\s*[:：]?\s*([\d,]+(?:\.\d+)?)\s*(억원|백만원)",
+        flat_text,
+        re.IGNORECASE,
     )
-    if pd.notna(value):
-        amount = parse_money_number(value)
-        if "백만원" in source and pd.notna(amount):
+    if explicit_match:
+        amount = parse_money_number(explicit_match.group(1))
+        if explicit_match.group(2) == "백만원" and pd.notna(amount):
             amount = amount / 100
+        source = compact_text(flat_text[max(0, explicit_match.start() - 120): explicit_match.end() + 180])
         return amount, source
-
-    strict_share_matches = list(
-        re.finditer(
-            r"(?:당사의\s+)?(?:보통주\s+)?상장\s*예정\s*주식\s*수는\s*"
-            r"([\d,]+)\s*주",
-            text,
-            re.IGNORECASE,
-        )
-    )
-    if strict_share_matches and pd.notna(offer_price):
-        match = strict_share_matches[-1]
-        shares = parse_money_number(match.group(1))
-        source = compact_text(text[max(0, match.start() - 120): match.end() + 180])
-        return float(shares) * float(offer_price) / 100_000_000, f"{source} * 주당공모가액"
-
-    shares, shares_source = extract_first(
-        [
-            r"총\s*상장\s*예정\s*(?:주식|증권)\s*수(?:는|는\s*총)?\s*([\d,]+)\s*(?:주|DR)",
-            r"총\s*상장예정(?:주식|증권)수(?:는|는\s*총)?\s*([\d,]+)\s*(?:주|DR)",
-            r"상장\s*예정\s*(?:주식|증권)\s*수\s*([\d,]+)\s*(?:주|DR)",
-            r"상장예정(?:주식|증권)수\s*([\d,]+)\s*(?:주|DR)",
-            r"공모\s*후\s*주식수\s*\(E\).{0,120}?([\d,]+)\s*(?:주|DR)",
-            r"공모\s*후\s*주주\s*합계.{0,120}?([\d,]+)\s*100(?:\.00)?%",
-        ],
-        context or text,
-    )
-    shares = parse_money_number(shares)
-    if pd.isna(shares):
-        all_matches = list(
-            re.finditer(
-                r"(총\s*상장\s*예정\s*(?:주식|증권)\s*수|총\s*상장예정(?:주식|증권)수|상장\s*예정\s*(?:주식|증권)\s*수|상장예정(?:주식|증권)수|공모\s*후\s*주식수\s*\(E\)).{0,80}?([\d,]+)\s*(?:주|DR)",
-                text,
-                re.IGNORECASE,
-            )
-        )
-        if all_matches:
-            last_match = all_matches[-1]
-            shares = parse_money_number(last_match.group(2))
-            shares_source = compact_text(text[max(0, last_match.start() - 120): last_match.end() + 180])
-    if pd.notna(shares) and pd.notna(offer_price):
-        return float(shares) * float(offer_price) / 100_000_000, f"{shares_source} * 주당공모가액"
     return pd.NA, ""
 
 
 def extract_float_shares(text):
     context = find_context(text, ["유통가능", "상장직후 유통", "상장 후 유통"], 7000)
-    source_text = context or text
+    source_text = compact_text(text)
 
-    # Some prospectuses state the ratio before the share count. Match that
-    # sentence first so a later controlling-shareholder lockup ratio is not used.
-    ratio_first_row = re.search(
-        r"상장\s*예정\s*(?:주식|증권)\s*수\s*[\d,]+\s*(?:주|DR)?\s*중\s*"
-        r"([\d.]+)\s*%\s*에\s*해당하는\s*([\d,]+)\s*(?:주|DR)(?:는|은)?"
-        r".{0,100}?상장\s*(?:직후|일)\s*유통가능",
-        source_text,
-        re.IGNORECASE,
+    listing_day_matches = list(
+        re.finditer(
+            r"(?:상장일|상장\s*직후|상장직후)\s*유통가능\s*"
+            r"([\d,]+)\s*(?:주|DR)?\s*([\d.]+)\s*%",
+            source_text,
+            re.IGNORECASE,
+        )
     )
-    if not ratio_first_row and source_text != text:
-        source_text = compact_text(text)
-        ratio_first_row = re.search(
+    if listing_day_matches:
+        listing_day_row = listing_day_matches[-1]
+        source = compact_text(source_text[max(0, listing_day_row.start() - 120): listing_day_row.end() + 180])
+        return parse_money_number(listing_day_row.group(1)), parse_money_number(listing_day_row.group(2)), source
+
+    # Some prospectuses state the ratio before the share count. Use the last
+    # occurrence so amended documents prefer the corrected/current section.
+    ratio_first_matches = list(
+        re.finditer(
             r"상장\s*예정\s*(?:주식|증권)\s*수\s*[\d,]+\s*(?:주|DR)?\s*중\s*"
             r"([\d.]+)\s*%\s*에\s*해당하는\s*([\d,]+)\s*(?:주|DR)(?:는|은)?"
             r".{0,100}?상장\s*(?:직후|일)\s*유통가능",
             source_text,
             re.IGNORECASE,
         )
-    if ratio_first_row:
+    )
+    if ratio_first_matches:
+        ratio_first_row = ratio_first_matches[-1]
         source = compact_text(source_text[max(0, ratio_first_row.start() - 120): ratio_first_row.end() + 180])
         return parse_money_number(ratio_first_row.group(2)), parse_money_number(ratio_first_row.group(1)), source
-
-    listing_day_source = source_text
-    listing_day_row = re.search(
-        r"(?:상장일|상장\s*직후|상장직후)\s*유통가능\s*([\d,]+)\s*(?:주|DR)?\s*([\d.]+)\s*%",
-        listing_day_source,
-        re.IGNORECASE,
-    )
-    if not listing_day_row and source_text != text:
-        listing_day_source = compact_text(text)
-        listing_day_row = re.search(
-            r"(?:상장일|상장\s*직후|상장직후)\s*유통가능\s*([\d,]+)\s*(?:주|DR)?\s*([\d.]+)\s*%",
-            listing_day_source,
-            re.IGNORECASE,
-        )
-    if listing_day_row:
-        source = compact_text(listing_day_source[max(0, listing_day_row.start() - 120): listing_day_row.end() + 180])
-        return parse_money_number(listing_day_row.group(1)), parse_money_number(listing_day_row.group(2)), source
 
     special_sentence = re.search(
         r"(?:이를\s*제외한|합산하여\s*총|출회가\s*가능한\s*유통가능물량.{0,80}?)\s*([\d,]+)\s*(?:주|DR)\s*\(\s*공모\s*후\s*기준\s*([\d.]+)\s*%\s*\).{0,220}?유통가능",
@@ -1434,8 +1443,8 @@ def parse_prospectus_metrics(text):
     offer_price, offer_source = extract_offer_price(text)
     competition, competition_source = extract_demand_competition(text)
     lockup_ratio, lockup_total, lockup_uncommitted, lockup_source = extract_lockup_ratio(text)
-    market_cap, market_cap_source = extract_market_cap(text, offer_price)
     float_shares, float_ratio, float_source = extract_float_shares(text)
+    market_cap, market_cap_source = extract_market_cap(text, offer_price, float_shares, float_ratio)
     underwriter = extract_underwriter(text)
     return {
         "공모가": offer_price,
