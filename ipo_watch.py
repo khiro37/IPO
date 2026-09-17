@@ -36,6 +36,7 @@ INTERNAL_COLUMNS = [
     "네이버_일정열",
     "네이버_종목코드",
     "DART회사명",
+    "DART법인코드",
     "공시일",
     "공시명",
     "접수번호",
@@ -238,27 +239,42 @@ def load_corp_codes(api_key, refresh=False):
     return df
 
 
-def resolve_corp(corp_codes, company_name):
+def resolve_corp_candidates(corp_codes, company_name, stock_code="", preferred_corp_code=""):
     wanted = normalize_name(company_name)
     if not wanted:
-        return "", ""
+        return []
 
     work = corp_codes.copy()
     work["normalized"] = work["corp_name"].map(normalize_name)
 
-    exact = work[work["normalized"].eq(wanted)]
-    if not exact.empty:
-        row = exact.iloc[0]
-        return row["corp_code"], row["corp_name"]
+    matched = work[work["normalized"].eq(wanted)]
+    if matched.empty:
+        matched = work[
+            work["normalized"].map(lambda name: wanted in name or name in wanted if name else False)
+        ]
+    if matched.empty:
+        return []
 
-    contains = work[
-        work["normalized"].map(lambda name: wanted in name or name in wanted if name else False)
-    ]
-    if not contains.empty:
-        row = contains.iloc[0]
-        return row["corp_code"], row["corp_name"]
+    stock_code = compact_text(stock_code)
+    preferred_corp_code = compact_text(preferred_corp_code)
+    rows = matched.drop_duplicates(subset=["corp_code"]).to_dict("records")
+    rows.sort(
+        key=lambda row: (
+            str(row.get("corp_code", "")) != preferred_corp_code if preferred_corp_code else True,
+            str(row.get("stock_code", "")).strip() != stock_code if stock_code else True,
+        )
+    )
+    return [(str(row["corp_code"]), str(row["corp_name"])) for row in rows]
 
-    return "", ""
+
+def resolve_corp(corp_codes, company_name, stock_code="", preferred_corp_code=""):
+    candidates = resolve_corp_candidates(
+        corp_codes,
+        company_name,
+        stock_code=stock_code,
+        preferred_corp_code=preferred_corp_code,
+    )
+    return candidates[0] if candidates else ("", "")
 
 
 def stock_code_for_corp(corp_codes, corp_code):
@@ -658,6 +674,38 @@ def search_investment_prospectus(api_key, corp_code, start_date, end_date):
     return rows
 
 
+def resolve_corp_with_prospectus(
+    api_key,
+    corp_codes,
+    company_name,
+    start_date,
+    end_date,
+    stock_code="",
+    preferred_corp_code="",
+):
+    candidates = resolve_corp_candidates(
+        corp_codes,
+        company_name,
+        stock_code=stock_code,
+        preferred_corp_code=preferred_corp_code,
+    )
+    first_candidate = candidates[0] if candidates else ("", "")
+    successful_search = False
+    last_error = None
+    for corp_code, dart_name in candidates:
+        try:
+            filings = search_investment_prospectus(api_key, corp_code, start_date, end_date)
+            successful_search = True
+        except Exception as error:
+            last_error = error
+            continue
+        if filings:
+            return corp_code, dart_name, filings
+    if not successful_search and last_error:
+        raise last_error
+    return first_candidate[0], first_candidate[1], []
+
+
 def search_filings_by_keyword(api_key, corp_code, start_date, end_date, keyword):
     rows = []
     page = 1
@@ -860,17 +908,28 @@ def update_existing_listing_prices(df, run_date, refresh_corp_codes=False):
             continue
         company_name = row.get("DART회사명") or row.get("회사")
         dart_name = ""
+        corp_code = ""
         if is_spac_company(row.get("회사") or company_name):
             stock_code = compact_text(row.get("네이버_종목코드", ""))
             if not stock_code:
                 stock_code = fetch_naver_stock_code_by_name(row.get("회사") or company_name)
         else:
-            corp_code, dart_name = resolve_corp(corp_codes, company_name)
-            stock_code = stock_code_for_corp(corp_codes, corp_code)
+            stock_code = compact_text(row.get("네이버_종목코드", ""))
+            corp_code = compact_text(row.get("DART법인코드", ""))
+            dart_name = compact_text(row.get("DART회사명", ""))
+            if not corp_code:
+                corp_code, dart_name = resolve_corp(corp_codes, company_name, stock_code=stock_code)
+            if not stock_code:
+                stock_code = stock_code_for_corp(corp_codes, corp_code)
             if not stock_code and not refreshed_corp_codes:
                 corp_codes = load_corp_codes(api_key, refresh=True)
                 refreshed_corp_codes = True
-                corp_code, dart_name = resolve_corp(corp_codes, company_name)
+                corp_code, dart_name = resolve_corp(
+                    corp_codes,
+                    company_name,
+                    stock_code=row.get("네이버_종목코드", ""),
+                    preferred_corp_code=corp_code,
+                )
                 stock_code = stock_code_for_corp(corp_codes, corp_code)
             if not stock_code:
                 stock_code = fetch_naver_stock_code_by_name(row.get("회사") or company_name)
@@ -886,6 +945,8 @@ def update_existing_listing_prices(df, run_date, refresh_corp_codes=False):
             row = apply_listing_price(row, stock_code, run_date, force=True)
             if dart_name and not has_value(row.get("DART회사명")):
                 row["DART회사명"] = dart_name
+            if corp_code:
+                row["DART법인코드"] = corp_code
         except Exception as error:
             row["오류"] = compact_text(f"{row.get('오류', '')} / 상장일 시세 조회 실패: {error}").strip(" /")
         rows.append(row)
@@ -924,11 +985,23 @@ def update_existing_issuance_reports(df, run_date, refresh_corp_codes=False):
             continue
 
         company_name = row.get("DART회사명") or row.get("회사")
-        corp_code, dart_name = resolve_corp(corp_codes, company_name)
+        corp_code = compact_text(row.get("DART법인코드", ""))
+        dart_name = compact_text(row.get("DART회사명", ""))
+        if not corp_code:
+            corp_code, dart_name = resolve_corp(
+                corp_codes,
+                company_name,
+                stock_code=row.get("네이버_종목코드", ""),
+            )
         if not corp_code and not refreshed_corp_codes:
             corp_codes = load_corp_codes(api_key, refresh=True)
             refreshed_corp_codes = True
-            corp_code, dart_name = resolve_corp(corp_codes, company_name)
+            corp_code, dart_name = resolve_corp(
+                corp_codes,
+                company_name,
+                stock_code=row.get("네이버_종목코드", ""),
+                preferred_corp_code=corp_code,
+            )
 
         if not corp_code:
             row["오류"] = compact_text(
@@ -941,6 +1014,7 @@ def update_existing_issuance_reports(df, run_date, refresh_corp_codes=False):
             row = apply_issuance_report(api_key, corp_code, row, run_date)
             if dart_name and not has_value(row.get("DART회사명")):
                 row["DART회사명"] = dart_name
+            row["DART법인코드"] = corp_code
         except Exception as error:
             row["오류"] = compact_text(f"{row.get('오류', '')} / 증권발행실적보고서 조회 실패: {error}").strip(" /")
         rows.append(row)
@@ -979,53 +1053,65 @@ def update_existing_prospectuses(df, run_date, refresh_corp_codes=False):
             continue
 
         company_name = row.get("DART회사명") or row.get("회사")
-        corp_code, dart_name = resolve_corp(corp_codes, company_name)
-        if not corp_code and not refreshed_corp_codes:
-            corp_codes = load_corp_codes(api_key, refresh=True)
-            refreshed_corp_codes = True
-            corp_code, dart_name = resolve_corp(corp_codes, company_name)
-        if not corp_code:
-            row["오류"] = compact_text(
-                f"{row.get('오류', '')} / 투자설명서 갱신용 corp_code를 찾지 못했습니다."
-            ).strip(" /")
-            rows.append(row)
-            continue
-
         try:
-            filings = search_investment_prospectus(
+            search_start = run_date - timedelta(days=365)
+            corp_code, dart_name, filings = resolve_corp_with_prospectus(
                 api_key,
-                corp_code,
-                run_date - timedelta(days=365),
+                corp_codes,
+                company_name,
+                search_start,
                 run_date,
+                stock_code=row.get("네이버_종목코드", ""),
+                preferred_corp_code=row.get("DART법인코드", ""),
             )
-            if filings:
-                filing = filings[0]
-                row.update(filing)
-                text = download_document_text(api_key, filing["접수번호"])
-                metrics = parse_prospectus_metrics(text)
-                existing_underwriters = [
-                    name.strip()
-                    for name in re.split(r"[,/]", str(row.get("증권사", "")))
-                    if is_valid_underwriter(name)
-                ]
-                parsed_underwriters = [
-                    name.strip()
-                    for name in re.split(r"[,/]", str(metrics.get("증권사", "")))
-                    if is_valid_underwriter(name)
-                ]
-                if existing_underwriters and len(existing_underwriters) > len(parsed_underwriters):
-                    metrics["증권사"] = row["증권사"]
-                elif not parsed_underwriters and row.get("증권사"):
-                    metrics["증권사"] = row["증권사"]
-                for key, value in metrics.items():
-                    if has_value(value):
-                        row[key] = value
-                existing_lockup_total = safe_float(row.get("의무보유확약_계", pd.NA))
-                if pd.notna(existing_lockup_total) and existing_lockup_total < 1_000:
-                    for key in ["의무확약비율_전", "의무보유확약_계", "의무보유확약_미확약", "의무확약_근거"]:
-                        row[key] = pd.NA
-                if dart_name:
-                    row["DART회사명"] = dart_name
+            if (not corp_code or not filings) and not refreshed_corp_codes:
+                corp_codes = load_corp_codes(api_key, refresh=True)
+                refreshed_corp_codes = True
+                corp_code, dart_name, filings = resolve_corp_with_prospectus(
+                    api_key,
+                    corp_codes,
+                    company_name,
+                    search_start,
+                    run_date,
+                    stock_code=row.get("네이버_종목코드", ""),
+                    preferred_corp_code=row.get("DART법인코드", ""),
+                )
+            if not corp_code:
+                raise RuntimeError("투자설명서 갱신용 corp_code를 찾지 못했습니다.")
+            if not filings:
+                raise RuntimeError("최근 1년 투자설명서 공시를 찾지 못했습니다.")
+
+            filing = filings[0]
+            row.update(filing)
+            row["DART회사명"] = dart_name
+            row["DART법인코드"] = corp_code
+            text = download_document_text(api_key, filing["접수번호"])
+            metrics = parse_prospectus_metrics(text)
+            existing_underwriters = [
+                name.strip()
+                for name in re.split(r"[,/]", str(row.get("증권사", "")))
+                if is_valid_underwriter(name)
+            ]
+            parsed_underwriters = [
+                name.strip()
+                for name in re.split(r"[,/]", str(metrics.get("증권사", "")))
+                if is_valid_underwriter(name)
+            ]
+            if existing_underwriters and len(existing_underwriters) > len(parsed_underwriters):
+                metrics["증권사"] = row["증권사"]
+            elif not parsed_underwriters and row.get("증권사"):
+                metrics["증권사"] = row["증권사"]
+            for key, value in metrics.items():
+                if has_value(value):
+                    row[key] = value
+            existing_lockup_total = safe_float(row.get("의무보유확약_계", pd.NA))
+            if pd.notna(existing_lockup_total) and existing_lockup_total < 1_000:
+                for key in ["의무확약비율_전", "의무보유확약_계", "의무보유확약_미확약", "의무확약_근거"]:
+                    row[key] = pd.NA
+            error_parts = re.split(r"\s*/\s*", str(row.get("오류", "")))
+            row["오류"] = " / ".join(
+                part for part in error_parts if part and "투자설명서" not in part and "corp_code" not in part
+            )
         except Exception as error:
             row["오류"] = compact_text(f"{row.get('오류', '')} / 투자설명서 갱신 실패: {error}").strip(" /")
         rows.append(row)
@@ -1496,17 +1582,19 @@ def collect_ipo_watch(run_date, refresh_corp_codes=False):
             rows.append(row)
             continue
         try:
-            corp_code, dart_name = resolve_corp(corp_codes, candidate["회사"])
+            search_start = run_date - timedelta(days=365)
+            corp_code, dart_name, filings = resolve_corp_with_prospectus(
+                api_key,
+                corp_codes,
+                candidate["회사"],
+                search_start,
+                run_date,
+                stock_code=candidate.get("네이버_종목코드", ""),
+            )
             row["DART회사명"] = dart_name
+            row["DART법인코드"] = corp_code
             if not corp_code:
                 raise RuntimeError("DART corp_code를 찾지 못했습니다.")
-
-            filings = search_investment_prospectus(
-                api_key,
-                corp_code,
-                run_date - timedelta(days=365),
-                run_date,
-            )
             if not filings:
                 raise RuntimeError("최근 1년 투자설명서 공시를 찾지 못했습니다.")
 
@@ -1566,12 +1654,18 @@ def collect_company_prospectuses(company_names, run_date, search_start, search_e
             rows.append(row)
             continue
         try:
-            corp_code, dart_name = resolve_corp(corp_codes, company_name)
+            corp_code, dart_name, filings = resolve_corp_with_prospectus(
+                api_key,
+                corp_codes,
+                company_name,
+                search_start,
+                search_end,
+                stock_code=row.get("네이버_종목코드", ""),
+            )
             row["DART회사명"] = dart_name
+            row["DART법인코드"] = corp_code
             if not corp_code:
                 raise RuntimeError("DART corp_code를 찾지 못했습니다.")
-
-            filings = search_investment_prospectus(api_key, corp_code, search_start, search_end)
             if not filings:
                 raise RuntimeError(f"{search_start:%Y-%m-%d}~{search_end:%Y-%m-%d} 투자설명서 공시를 찾지 못했습니다.")
 
