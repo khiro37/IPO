@@ -785,7 +785,7 @@ def extract_final_lockup_ratio(text):
     if section_end > 0:
         context = context[:section_end]
     rows = re.search(
-        r"미확약\s+(.*?)\s+(?:계|합계)\s+(.*?)(?=\s+주1\))",
+        r"미확약\s+(.*?)\s+(?:계|합계)\s+(.*?)(?=\s+(?:주\s*1\)|Ⅲ\.|$))",
         context,
         re.DOTALL,
     )
